@@ -1,0 +1,95 @@
+version: "3.9"
+
+# ---------------------------------------------------------------------------
+# Test stack — lightweight services for running the e2e test suite.
+#
+# Uses offset ports (5433, 5673, 8001) so it can run alongside the
+# production dev stack without port conflicts.
+#
+# PostgresEventBus is used instead of Redpanda to keep the stack minimal.
+#
+# Usage
+# -----
+#   docker compose -f test.docker-compose.yml up -d
+#   pytest tests/e2e/ -m e2e
+#   docker compose -f test.docker-compose.yml down -v
+# ---------------------------------------------------------------------------
+
+networks:
+  rag_test:
+    name: rag-pipeline-test
+
+volumes:
+  pg_test_data:
+  rabbitmq_test_data:
+
+services:
+
+  # ─── Postgres + pgvector ─────────────────────────────────────────────────
+  postgres_test:
+    image: ankane/pgvector:latest
+    container_name: rag-postgres-test
+    environment:
+      POSTGRES_USER: rag_test
+      POSTGRES_PASSWORD: rag_test
+      POSTGRES_DB: rag_test
+    ports:
+      - "5433:5432"
+    volumes:
+      - pg_test_data:/var/lib/postgresql/data
+    networks:
+      - rag_test
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rag_test"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ─── RabbitMQ (with management UI on :15673) ──────────────────────────────
+  rabbitmq_test:
+    image: rabbitmq:3-management
+    container_name: rag-rabbitmq-test
+    environment:
+      RABBITMQ_DEFAULT_USER: rag_test
+      RABBITMQ_DEFAULT_PASS: rag_test
+    ports:
+      - "5673:5672"
+      - "15673:15672"   # Management UI → http://localhost:15673
+    volumes:
+      - rabbitmq_test_data:/var/lib/rabbitmq
+    networks:
+      - rag_test
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
+  # ─── API (FastAPI) — test configuration ──────────────────────────────────
+  api_test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rag-api-test
+    environment:
+      DB_URL: "postgresql://rag_test:rag_test@postgres_test:5432/rag_test"
+      RABBITMQ_URL: "amqp://rag_test:rag_test@rabbitmq_test:5672/"
+      EVENT_BUS: "postgres"
+      POSTS_TABLE: "posts_test"
+      DB_POOL_MIN: "1"
+      DB_POOL_MAX: "5"
+    ports:
+      - "8001:8000"
+    networks:
+      - rag_test
+    depends_on:
+      postgres_test:
+        condition: service_healthy
+      rabbitmq_test:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
