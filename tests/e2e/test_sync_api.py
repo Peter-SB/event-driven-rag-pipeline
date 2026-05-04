@@ -30,10 +30,10 @@ pytestmark = pytest.mark.e2e
 def _sync_payload(*post_ids: int, updated_at: datetime | None = None, **post_kwargs) -> dict:
     """Build a SyncRequest JSON body for one or more posts."""
     posts = [
-        make_post(post_id=pid, updated_at=updated_at, **post_kwargs).model_dump(by_alias=True)
+        make_post(post_id=pid, updated_at=updated_at, **post_kwargs).model_dump(by_alias=True, mode='json')
         for pid in post_ids
     ]
-    return {"posts": posts, "table_name": "e2e_posts"}
+    return {"posts": posts, "library_id": "e2e"}
 
 
 # ---------------------------------------------------------------------------

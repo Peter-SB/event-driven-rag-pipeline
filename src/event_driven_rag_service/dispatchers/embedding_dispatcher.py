@@ -1,9 +1,14 @@
 # dispatchers/embedding_dispatcher.py
+import logging
+
 import aio_pika
-from src.event_driven_rag_service.config import consumer_groups
-from src.event_driven_rag_service.infrastructure.event_bus import create_event_log
-from src.event_driven_rag_service.tasks.search_tasks import SearchRunTask
-from src.event_driven_rag_service.tasks.registry import TASK_ROUTES
+
+from event_driven_rag_service.config import consumer_groups
+from event_driven_rag_service.infrastructure.event_bus import EventBusBase
+from event_driven_rag_service.tasks.search_tasks import SearchRunTask
+from event_driven_rag_service.tasks.registry import TASK_ROUTES
+
+logger = logging.getLogger(__name__)
 
 
 class EmbeddingDispatcher:
@@ -19,13 +24,13 @@ class EmbeddingDispatcher:
     Single responsibility: trigger search execution once a query is embedded.
     """
 
-    def __init__(self, rmq_connection: aio_pika.Connection):
-        self._event_bus = create_event_log()
+    def __init__(self, rmq_connection: aio_pika.Connection, event_bus: EventBusBase) -> None:
+        self._event_bus = event_bus
         self._rmq = rmq_connection
 
     async def run(self) -> None:
         channel = await self._rmq.channel()
-        search_ex = await channel.get_exchange("search")
+        search_ex = await channel.declare_exchange("search", aio_pika.ExchangeType.TOPIC, durable=True)
 
         async for event in self._event_bus.subscribe(
             "search_query.embedded", consumer_group=consumer_groups.SEARCH_QUERY_EMBEDDED
@@ -38,4 +43,8 @@ class EmbeddingDispatcher:
             await search_ex.publish(
                 aio_pika.Message(task.model_dump_json().encode()),
                 routing_key=route.routing_key,
+            )
+            logger.debug(
+                "EmbeddingDispatcher: dispatched search run task for job_id=%s",
+                event.get("query_job_id"),
             )

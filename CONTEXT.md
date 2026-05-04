@@ -130,15 +130,25 @@ Source-agnostic: `external_id`, `external_source`, `external_created_at`.
 Workers run as separate processes with their own entrypoints:
 - `python -m event_driven_rag_service.worker.entrypoints.cpu`
 - `python -m event_driven_rag_service.worker.entrypoints.gpu`
+- `python -m event_driven_rag_service.worker.entrypoints.dispatcher`
 
-This allows CPU and GPU workers to be scaled independently and keeps resource
-profiles separate (CPU workers are IO-bound; GPU workers hold a model in VRAM).
+This allows CPU and GPU workers (and dispatchers) to be scaled independently and keeps
+resource profiles separate (CPU workers are IO-bound; GPU workers hold a model in VRAM;
+dispatchers are event-loop-bound).
+
+Dispatchers bridge the event log (Redpanda/Postgres) to RabbitMQ. The combined dispatcher
+entrypoint runs PostDispatcher and ChunkDispatcher concurrently in a single process.
+
+### Analysis Pipeline (Deferred)
+The `analysis_text` field in ChunkTask is currently unused and will be removed before
+the analysis pipeline is implemented. For MVP, only `body` and `summary_title` chunking
+are active.
 
 ---
 
 ## Out of Scope (MVP)
 
 - Semantic search / vector similarity queries
-- Inference / categorisation / analysis pipeline
-- EmbeddingDispatcher (embeddings written directly by GpuEmbedWorker)
+- Inference / categorisation / analysis pipeline (analysis chunk tasks deferred)
+- SearchDispatcher (triggered post embedding.completed events — see future note above)
 - Auth / multi-tenancy

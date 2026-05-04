@@ -35,10 +35,5 @@ class Settings:
         default_factory=lambda: os.getenv("REDPANDA_SERVERS", "localhost:19092")
     )
 
-    # --- Posts ---
-    posts_table: str = field(
-        default_factory=lambda: os.getenv("POSTS_TABLE", "posts")
-    )
-
 
 settings = Settings()

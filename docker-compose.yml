@@ -1,23 +1,17 @@
 version: "3.9"
 
-# ---------------------------------------------------------------------------
 # Shared networking
-# ---------------------------------------------------------------------------
 networks:
   rag:
     name: rag-pipeline
 
-# ---------------------------------------------------------------------------
 # Volumes
-# ---------------------------------------------------------------------------
 volumes:
   pg_data:
   rabbitmq_data:
   redpanda_data:
 
-# ---------------------------------------------------------------------------
 # Services
-# ---------------------------------------------------------------------------
 services:
 
   # ─── Postgres + pgvector ─────────────────────────────────────────────────
@@ -179,3 +173,24 @@ services:
     #           count: 1
     #           capabilities: [gpu]
     command: python -m event_driven_rag_service.worker.entrypoints.gpu
+
+  # ─── Dispatcher ────────────────────────────────────────────────────────────
+  dispatcher:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rag-dispatcher
+    restart: unless-stopped
+    environment:
+      DB_URL: "postgresql://rag:rag@postgres:5432/rag"
+      RABBITMQ_URL: "amqp://rag:rag@rabbitmq:5672/"
+      REDPANDA_SERVERS: "redpanda:29092"
+      EVENT_BUS: "${EVENT_BUS:-postgres}"
+    networks:
+      - rag
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    command: python -m event_driven_rag_service.worker.entrypoints.dispatcher

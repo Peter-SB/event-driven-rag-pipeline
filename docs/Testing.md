@@ -41,7 +41,7 @@ The suite is split into three tiers with different scope, speed, and infrastruct
 
 **Scope:** Interaction between components with real infrastructure.
 
-**Infrastructure:** Real Postgres and RabbitMQ via `testcontainers`. Containers spin up for the test run and are torn down afterwards. No manual setup required.
+**Infrastructure:** Real Postgres and RabbitMQ and redpanda via `testcontainers`. Containers spin up for the test run and are torn down afterwards. No manual setup required. Use redpanda for testing the event bus integration but use mock event bus for tests where we want to easily inspect the published events table without having deal with consumer groups and offsets.
 
 **When to use:** Where unit tests with mocks cannot verify the actual behaviour — SQL queries against real data, RabbitMQ message routing, offset tracking in the Postgres event bus mock.
 
@@ -60,7 +60,7 @@ The suite is split into three tiers with different scope, speed, and infrastruct
 
 **Scope:** The full system in a production-like environment.
 
-**Infrastructure:** Full Docker Compose stack. All services running.
+**Infrastructure:** Full Docker Compose stack. All services running, like production.
 
 **When to use:** Critical user journeys only. These tests are slow and expensive to maintain. Keep the count low but meaningful.
 
@@ -156,17 +156,17 @@ No setup required. Runs in seconds.
 pytest tests/integration/
 ```
 
-Requires Docker. `testcontainers` will pull and start Postgres and RabbitMQ images automatically. First run will be slower due to image pull.
+Requires Docker. `testcontainers` pulls and starts a Postgres image automatically — no manual setup. First run is slower due to the image pull; subsequent runs reuse the cached image.
 
 ### E2E tests
 
 ```bash
 docker compose up -d
-pytest tests/e2e/
+pytest tests/e2e/ -m e2e
 docker compose down
 ```
 
-The full stack must be running before E2E tests are invoked. CI handles this automatically.
+The full Docker Compose stack must be running before E2E tests are invoked. Tests connect to the real API server via HTTP (not ASGI transport) and query Postgres directly to verify pipeline state. CI handles stack startup automatically.
 
 ### All tests
 
@@ -178,16 +178,33 @@ pytest
 
 ## Key Fixtures
 
-Use a contest.py per test category.
-Shared fixtures live in `conftest.py` and are available across all test files.
+Each tier has its own `conftest.py`. Fixtures do not bleed across tiers.
+
+### Unit (`tests/unit/conftest.py`)
 
 | Fixture | Scope | Description |
 |---|---|---|
-| `postgres_container` | session | Starts a Postgres testcontainer. Shared across the integration suite. |
-| `rabbitmq_container` | session | Starts a RabbitMQ testcontainer. |
-| `db` | function | Fresh DB connection per test. Rolls back after each test. |
-| `event_bus` | function | In-memory fake event bus. No I/O. |
-| `rmq_channel` | function | Connected RabbitMQ channel against the test container. |
+| `fake_bus` | function | In-memory `FakeEventBus`. Records published events; yields them on subscribe. No I/O. |
+| `fake_exchange` | function | In-memory `FakeExchange`. Records `publish()` calls with routing keys. |
+
+### Integration (`tests/integration/conftest.py`)
+
+| Fixture | Scope | Description |
+|---|---|---|
+| `postgres_container` | session | Postgres testcontainer (ankane/pgvector). Pulled once, shared across the integration session. |
+| `postgres_dsn` | session | Raw asyncpg-compatible DSN from the container. |
+| `postgres_pool` | function | Fresh asyncpg pool per test, bound to the test event loop. |
+| `clean_event_bus_tables` | function | Drops and recreates `event_log` + `consumer_offsets` before each test. |
+| `clean_posts_table` | function | Creates (or truncates) `test_posts` and yields a bound `PostRepository`. |
+| `clean_chunk_table` | function | Creates (or truncates) a test chunk table and yields a bound `ChunkRepository`. |
+
+### E2E (`tests/e2e/conftest.py`)
+
+| Fixture | Scope | Description |
+| --- | --- | --- |
+| `postgres_pool_e2e` | function | asyncpg pool connected to the Docker Compose Postgres instance (via `DB_URL`). |
+| `rmq_connection_e2e` | function | aio_pika connection to the Docker Compose RabbitMQ instance (via `RABBITMQ_URL`). |
+| `async_client` | function | httpx `AsyncClient` pointed at the running API server (via `API_BASE`). Runs pre-test cleanup of e2e tables. |
 
 ---
 
@@ -210,7 +227,9 @@ Unit and integration tests run on every push. E2E tests run on merge to `main`. 
 
 ---
 
-Test lists
+# Core Expected Behaviour Tests
+
+List of user defined critical paths and behaviours that must be tested and not changed without a feature change.
 
 ## Sync Endpoint API
 
@@ -240,4 +259,29 @@ Check that if a task fails it gets requeued and eventually goes to the DLQ after
 Check that if a post has no body, no chunk tasks are dispatched.
 Check boundary logic for chunker
 
+# Idempotency and deduplication
+Check that if the same post is synced multiple times, it does not create duplicate chunks or embeddings by using post_updated_at from client as version and checking hashes before inserting new chunks or embeddings.
 
+# Event Bus Publish and Consume
+Events published to event bus are consumed by correct subscribers.
+Consumer group offset is tracked and resumed correctly on restart
+
+# Databases
+First chunk task for a library+field+model triple creates the chunk table with correct vector dimensions
+Re-syncing a post with updated chunks deduplicates via text_hash (existing chunks are skipped)
+Switching embedding models creates a new chunk table without data loss
+
+# API Error Handling
+Invalid library_id in sync request is rejected with 400
+Malformed post data (missing external_id, invalid updated_at) is rejected
+DB connection loss during sync returns 500 (not crash)
+
+# Dead-Letter Queue & Retry Exhaustion
+Failed task is requeued per RabbitMQ retry policy (max delivery count)
+After max retries, message lands in DLQ with original payload intact
+DLQ messages can be inspected/replayed
+
+# Task Dispatcher Event Filtering
+Dispatcher does NOT publish chunk tasks if neither body nor custom_body changed (even if title changed)
+Dispatcher does NOT publish summary chunk task if summary doesn't exist, OR if summary exists but didn't change (unless title changed!!)
+ 

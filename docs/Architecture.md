@@ -170,20 +170,56 @@ These layers are not redundant. The Event Log is the audit trail and integration
 ┌────────────────────────────▼────────────────────────────────────────┐
 │ DISPATCHERS (Redpanda consumers → RabbitMQ publishers)              │
 │                                                                     │
-│  PostDispatcher                                                     │
-│  EmbeddingDispatcher                                                │
+│  PostDispatcher          (post.synced → chunk tasks)               │
+│  ChunkDispatcher         (chunks.created → embed tasks)            │
+│  EmbeddingDispatcher     (embedding.completed → search/analysis)   │
+│  SearchDispatcher        (search_job.created → embed query task)   │
 └────────────────────────────┬────────────────────────────────────────┘
                              │
 ┌────────────────────────────▼────────────────────────────────────────┐
-│ RABBITMQ EXCHANGES + QUEUES (topic exchanges)                       │
-└────────────────────────────┬────────────────────────────────────────┘
-                             │
-┌────────────────────────────▼────────────────────────────────────────┐
-│ WORKERS                                                             │
+│ RABBITMQ EXCHANGES + QUEUES (direct exchanges, routed by key)       │
 │                                                                     │
-│  CPU                                        
+│  ingestion exchange:  cpu.chunk.post                               │
+│  embedding exchange:  gpu.embed.{model} (per model)                │
+│  inference exchange:  gpu.infer_* and io.infer_*                   │
+│  search exchange:     cpu.search.run, cpu.search.rank              │
+│  dlx exchange:        dlq.* (dead letter sinks)                    │
+└────────────────────────────┬────────────────────────────────────────┘
+                             │
+┌────────────────────────────▼────────────────────────────────────────┐
+│ WORKERS (long-lived processes, consume from RabbitMQ)               │
+│                                                                     │
+│  CPU Workers        (chunking, search execution, ranking)           │
+│  GPU Workers        (embeddings, inference with models)            │
+│                                                                     │
+│  Deployed separately to allow independent scaling. Each has its    │
+│  own entrypoint, connection pool, and resource constraints.        │
 └─────────────────────────────────────────────────────────────────────┘
 ```
+
+## Dispatcher Deployment
+
+Dispatchers are stateless async processes that bridge the Event Log to RabbitMQ. They run as separate processes (distinct from workers) and can be scaled independently:
+
+- **PostDispatcher** — consumes `post.synced` events, publishes chunk tasks to `ingestion` exchange
+- **ChunkDispatcher** — consumes `chunks.created` events, publishes embed tasks to `embedding` exchange
+- **EmbeddingDispatcher** — consumes `embedding.completed` events, publishes downstream tasks (deferred post-MVP)
+- **SearchDispatcher** — consumes `search_job.created` and `search_query.embedded` events (deferred post-MVP)
+
+For MVP simplicity, a single combined entrypoint runs PostDispatcher and ChunkDispatcher concurrently:
+
+```
+python -m event_driven_rag_service.worker.entrypoints.dispatcher
+```
+
+This matches the single-process constraint for homelab while allowing independent scaling if needed (split into separate containers per environment).
+
+Consumer group management ensures exactly-once semantics:
+- Each dispatcher instance joins its consumer group (e.g. `post-dispatcher-synced`)
+- If multiple dispatcher instances run, they share the work (partition by consumer group)
+- On restart, unprocessed events from the group offset are replayed
+
+---
 
 ## GPU Worker Design
 
@@ -404,3 +440,7 @@ flowchart TD
     class API,API2 producer
     class note1,note2,note3,note4 schema
 ```
+
+# Scaling
+
+Workers are designed to be horizontally scalable. Multiple instances can run concurrently, consuming from the same queues. RabbitMQ handles load balancing between them. 

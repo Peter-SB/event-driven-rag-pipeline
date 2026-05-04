@@ -37,8 +37,8 @@ class ChunkTask(BaseTask):
 
     def chunk_table_name(self) -> str:
         """Derive the target Postgres table name for this task's chunks."""
-        from event_driven_rag_service.utils.build_chunk_table_name import build_chunk_table_name
-        return build_chunk_table_name(self.task_type, self.embed_model)
+        from event_driven_rag_service.utils.build_table_names import build_chunk_table_name
+        return build_chunk_table_name(self.post_table, self.task_type, self.embed_model)
 
 
 @dataclass

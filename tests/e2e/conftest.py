@@ -104,22 +104,21 @@ async def async_client(
     from event_driven_rag_service.api.app import app
 
     # Declare RabbitMQ exchanges and queues
-    async with rmq_connection_e2e.channel() as ch:
-        await setup_topology(ch)
+    await setup_topology(rmq_connection_e2e)
 
     # Prepare Postgres event bus
     event_bus = PostgresEventBus(postgres_pool_e2e)
     await event_bus.setup_tables()
 
-    # Prepare post repository (isolated table for e2e tests)
-    post_repo = PostRepository(postgres_pool_e2e, table_name="e2e_posts")
-    await post_repo.ensure_table()
+    # Prepare post repository (sync route manages table creation lazily via seen_post_tables)
+    post_repo = PostRepository(postgres_pool_e2e)
 
     # Inject state (route handlers read from request.app.state)
     app.state.pool = postgres_pool_e2e
     app.state.rmq = rmq_connection_e2e
     app.state.event_bus = event_bus
     app.state.post_repo = post_repo
+    app.state.seen_post_tables = set()
 
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
@@ -127,7 +126,7 @@ async def async_client(
         yield client
 
     # Clean up test tables so the next test starts from a blank state
-    async with postgres_pool_e2e.acquire() as conn:
-        await conn.execute("DROP TABLE IF EXISTS e2e_posts")
-        await conn.execute("DELETE FROM event_log WHERE topic = 'post.synced'")
-        await conn.execute("DELETE FROM consumer_offsets WHERE topic = 'post.synced'")
+    # async with postgres_pool_e2e.acquire() as conn:
+    #     await conn.execute("DROP TABLE IF EXISTS posts_e2e")
+    #     await conn.execute("DELETE FROM event_log WHERE topic = 'post.synced'")
+    #     await conn.execute("DELETE FROM consumer_offsets WHERE topic = 'post.synced'")

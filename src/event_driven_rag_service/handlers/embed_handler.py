@@ -14,7 +14,7 @@ query — encode the query string carried inline, persist the vector,
 from __future__ import annotations
 
 import logging
-from typing import Any, Protocol
+from typing import Protocol, TypedDict
 
 from event_driven_rag_service.events.embedding_events import EmbeddingCompletedEvent
 from event_driven_rag_service.events.search_events import SearchQueryEmbeddedEvent
@@ -22,6 +22,28 @@ from event_driven_rag_service.infrastructure.event_bus import EventBusBase
 from event_driven_rag_service.tasks.embed_task import EmbedTask
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Typed row models for embedding persistence
+# ---------------------------------------------------------------------------
+
+class ChunkEmbeddingRow(TypedDict):
+    """Row passed to EmbeddingStore.save_batch for a chunk embedding."""
+    chunk_id: str
+    model_name: str
+    embedding: list[float]
+    chunk_table: str
+
+
+class QueryEmbeddingRow(TypedDict):
+    """Row passed to EmbeddingStore.save_batch for a query embedding."""
+    query_job_id: str
+    model_name: str
+    embedding: list[float]
+
+
+EmbeddingRow = ChunkEmbeddingRow | QueryEmbeddingRow
 
 
 # ---------------------------------------------------------------------------
@@ -46,8 +68,8 @@ class ChunkFetcher(Protocol):
 
 
 class EmbeddingStore(Protocol):
-    async def save_batch(self, rows: list[dict[str, Any]]) -> None:
-        """Persist embedding rows: chunk_id / query_job_id / model_name / embedding."""
+    async def save_batch(self, rows: list[EmbeddingRow]) -> None:
+        """Persist embedding rows: ChunkEmbeddingRow or QueryEmbeddingRow."""
         ...
 
 
@@ -108,40 +130,38 @@ class EmbedHandler:
             logger.exception("EmbedHandler: encode() failed — failing entire batch")
             return [], tasks
 
-        rows = [
-            {
-                "chunk_id":    triples[i][1],
-                "model_name":  model_name,
-                "embedding":   vectors[i],
-                "chunk_table": triples[i][0].chunk_table,
-            }
+        rows: list[EmbeddingRow] = [
+            ChunkEmbeddingRow(
+                chunk_id=triples[i][1],
+                model_name=model_name,
+                embedding=vectors[i],
+                chunk_table=triples[i][0].chunk_table or "",
+            )
             for i in range(len(triples))
         ]
         await self._embeddings.save_batch(rows)
 
         # Emit one embedding.completed per (post_id, chunk_table) group.
-        groups: dict[tuple[int | None, str | None], dict] = {}
+        # key → (post_id, post_table, chunk_table, trace_id, chunk_ids)
+        GroupKey = tuple[int | None, str | None]
+        group_chunks: dict[GroupKey, list[str]] = {}
+        group_meta: dict[GroupKey, tuple[str | None, str | None, str | None]] = {}
         for task, chunk_id, _ in triples:
-            key = (task.post_id, task.chunk_table)
-            if key not in groups:
-                groups[key] = {
-                    "post_id":     task.post_id,
-                    "post_table":  task.post_table,
-                    "chunk_table": task.chunk_table,
-                    "model_name":  model_name,
-                    "chunk_ids":   [],
-                    "trace_id":    task.trace_id,
-                }
-            groups[key]["chunk_ids"].append(chunk_id)
+            key: GroupKey = (task.post_id, task.chunk_table)
+            if key not in group_chunks:
+                group_chunks[key] = []
+                group_meta[key] = (task.post_table, task.chunk_table, task.trace_id)
+            group_chunks[key].append(chunk_id)
 
-        for data in groups.values():
+        for key, chunk_ids in group_chunks.items():
+            post_table, chunk_table, trace_id = group_meta[key]
             event = EmbeddingCompletedEvent(
-                post_id=data["post_id"],
-                post_table=data["post_table"],
-                chunk_ids=data["chunk_ids"],
-                chunk_table=data["chunk_table"],
-                model_name=data["model_name"],
-                trace_id=data["trace_id"],
+                post_id=key[0],
+                post_table=post_table,
+                chunk_ids=chunk_ids,
+                chunk_table=chunk_table,
+                model_name=model_name,
+                trace_id=trace_id,
             )
             await self._event_log.publish(event.event_type, event.to_dict())
 
@@ -172,11 +192,11 @@ class EmbedHandler:
             vector = encoder.encode([task.query])[0]
             await self._embeddings.save_batch(
                 [
-                    {
-                        "query_job_id": task.query_job_id,
-                        "model_name":   model_name,
-                        "embedding":    vector,
-                    }
+                    QueryEmbeddingRow(
+                        query_job_id=task.query_job_id,
+                        model_name=model_name,
+                        embedding=vector,
+                    )
                 ]
             )
             event = SearchQueryEmbeddedEvent(

@@ -45,7 +45,7 @@ async def _setup():
         await event_bus.setup_tables()
     logger.info("Event bus ready (type=%s)", event_bus.__class__.__name__)
 
-    post_repo  = PostRepository(pool, table_name=settings.posts_table)
+    post_repo  = PostRepository(pool)
     chunk_repo = ChunkRepository(pool)
     return pool, event_bus, post_repo, chunk_repo
 

@@ -42,8 +42,7 @@ async def lifespan(app: FastAPI):
 
     # --- RabbitMQ --------------------------------------------------------
     rmq = await aio_pika.connect_robust(settings.rabbitmq_url)
-    async with rmq.channel() as ch:
-        await setup_topology(ch)
+    await setup_topology(rmq)
     logger.info("RabbitMQ topology ready")
 
     # --- Event bus -------------------------------------------------------
@@ -52,14 +51,14 @@ async def lifespan(app: FastAPI):
         await event_bus.setup_tables()
 
     # --- Repositories ----------------------------------------------------
-    post_repo = PostRepository(pool, table_name=settings.posts_table)
-    await post_repo.ensure_table()
+    post_repo = PostRepository(pool)
 
     # --- Inject into app state -------------------------------------------
     app.state.pool = pool
     app.state.rmq = rmq
     app.state.event_bus = event_bus
     app.state.post_repo = post_repo
+    app.state.seen_post_tables: set[str] = set()  # Track seen post tables for lazy creation
 
     logger.info("Startup complete")
     yield

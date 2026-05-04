@@ -20,7 +20,7 @@ class BaseEvent(BaseModel):
     - Optionally: derived/lightweight data
     """
 
-    event_id: str = Field(default_factory=lambda: str(uuid.uuid4())) # todo: check to use unique id for impodence
+    event_id: str = Field(default_factory=lambda: str(uuid.uuid4())) # Todo: investigate idempotency keys
     event_type: str
     event_version: int = 1
 
@@ -33,7 +33,7 @@ class BaseEvent(BaseModel):
     correlation_id: Optional[str] = None
     causation_id: Optional[str] = None
 
-    model_config = ConfigDict(extra="forbid") # ??
+    model_config = ConfigDict(extra="forbid")
 
     def to_dict(self) -> Dict[str, Any]:
         return self.model_dump(mode="json")

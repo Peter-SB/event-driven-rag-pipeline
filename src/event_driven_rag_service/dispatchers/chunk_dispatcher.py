@@ -37,7 +37,7 @@ class ChunkDispatcher:
     async def _handle_chunks_created(self) -> None:
         channel = await self._rmq.channel()
         route = TASK_ROUTES["embed"]
-        exchange = await channel.get_exchange(route.exchange)
+        exchange = await channel.declare_exchange(route.exchange, aio_pika.ExchangeType.TOPIC, durable=True)
 
         async for event in self._event_bus.subscribe(
             "chunks.created", consumer_group=consumer_groups.CHUNKS_CREATED
@@ -52,7 +52,7 @@ class ChunkDispatcher:
 
     async def _dispatch_embedding(
         self,
-        exchange: aio_pika.Exchange,
+        exchange: aio_pika.abc.AbstractExchange,
         route,
         event: dict,
     ) -> None:

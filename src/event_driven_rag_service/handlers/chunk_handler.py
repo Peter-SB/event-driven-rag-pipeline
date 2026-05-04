@@ -20,9 +20,9 @@ import hashlib
 import logging
 import uuid
 from datetime import datetime, UTC
-from typing import Any, Protocol
+from typing import Protocol, TypedDict
 
-from event_driven_rag_service.config.embedding_config import CHUNK_CONFIG
+from event_driven_rag_service.config.embedding_config import CHUNK_CONFIG, EMBED_CONFIGS
 from event_driven_rag_service.data_models.chunk import Chunk, ChunkMetadata
 from event_driven_rag_service.events.chunk_events import ChunksCreatedEvent
 from event_driven_rag_service.infrastructure.event_bus import EventBusBase
@@ -129,19 +129,31 @@ def _build_chunks(
 # Repository protocols  (inject real Postgres implementations at startup)
 # ---------------------------------------------------------------------------
 
+class PostRow(TypedDict, total=False):
+    """Typed shape of a post row as returned by PostFetcher.fetch."""
+    updated_at: str | None
+    title: str | None
+    external_id: str | None
+    custom_body: str | None
+    body_text: str | None
+    summary: str | None
+    analysis_text: str | None
+
+
 class PostFetcher(Protocol):
-    """Fetch a single post row as a plain dict."""
-    async def fetch(self, post_id: int, table: str) -> dict[str, Any]: ...
+    """Fetch a single post row as a typed dict."""
+    async def fetch(self, post_id: int, table_name: str) -> PostRow: ...
 
 
 class ChunkStore(Protocol):
     """Persist a batch of Chunk objects."""
-    async def bulk_insert(self, chunks: list[Chunk]) -> None: ...
+    async def ensure_table(self, table_name: str, vector_dim: int) -> None: ...
+    async def bulk_insert(self, chunks: list[Chunk], table_name: str) -> None: ...
 
 
 class ChunkVersionChecker(Protocol):
     """Return existing text hashes for a post to enable idempotent inserts."""
-    async def get_text_hashes(self, post_id: int) -> dict[str, str]: ...
+    async def get_text_hashes(self, post_id: int, table_name: str) -> dict[str, str]: ...
 
 
 # ---------------------------------------------------------------------------
@@ -153,7 +165,7 @@ class ChunkPostHandler:
 
     Parameters
     ----------
-    post_fetcher    : fetch a post row by (post_id, post_table)
+    post_fetcher    : fetch a post row by post_id
     chunk_store     : persist new Chunk rows
     version_checker : retrieve existing text hashes for idempotency
     event_log       : emit ``chunks.created`` after successful insert
@@ -188,10 +200,23 @@ class ChunkPostHandler:
             return []
 
         chunk_table = task.chunk_table_name()
-        post_updated_at = str(post.get("updated_at", ""))
+        post_updated_at = str(post.get("updated_at", "") or "")
+
+        # Get vector dimension for this task type from embedding config
+        embed_config = EMBED_CONFIGS.get(task.task_type)
+        if not embed_config:
+            logger.error(
+                "ChunkPostHandler: no embedding config for task_type=%s",
+                task.task_type,
+            )
+            return []
+        vector_dim = embed_config.dim
+
+        # Lazily ensure the chunk table exists
+        await self._chunks.ensure_table(chunk_table, vector_dim)
 
         existing_hashes: dict[str, str] = await self._versions.get_text_hashes(
-            task.post_id
+            task.post_id, chunk_table
         )
 
         all_chunks = _build_chunks(
@@ -212,7 +237,7 @@ class ChunkPostHandler:
             )
             return []
 
-        await self._chunks.bulk_insert(new_chunks)
+        await self._chunks.bulk_insert(new_chunks, chunk_table)
 
         chunk_ids = [c.id for c in new_chunks]
         event = ChunksCreatedEvent(
@@ -238,7 +263,7 @@ class ChunkPostHandler:
         return chunk_ids
 
     @staticmethod
-    def _resolve_text(task: ChunkTask, post: dict[str, Any]) -> str | None:
+    def _resolve_text(task: ChunkTask, post: PostRow) -> str | None:
         """Return the correct text for this task_type."""
         if task.task_type == "body":
             return post.get("custom_body") or post.get("body_text")

@@ -61,33 +61,3 @@ class Post(BaseModel):
             except json.JSONDecodeError:
                 pass
         return v
-
-# Old come back to
-    # uuid: str
-    # post_id: int
-    # external_id: str 
-    # external_source: str 
-    # url: str
-    # title: str
-    # custom_title: Optional[str] = Field(None)
-    # body_text: Optional[str] = Field(None) 
-    # custom_body: Optional[str] = Field(None)
-    # author: str
-    # subreddit: str
-    # external_created_at: datetime 
-    # added_at: datetime
-    # updated_at: datetime
-    # notes: Optional[str] = None
-    # rating: Optional[float] = None
-    # is_read: bool = Field(False)
-    # read_at: Optional[datetime] = Field(None)
-    # is_favorite: bool = Field(False)
-    # is_archived: bool = Field(False)
-    # queued_at: Optional[datetime] = Field(None)
-    # is_deleted: bool = Field(False)
-    # folder_ids: list[int] = Field(default_factory=list)
-    # extra_fields: Optional[Union[dict, str]] = Field(None)
-    # body_min_hash: Optional[str] = Field(None)
-    # summary: Optional[str] = None
-
-    # model_config = ConfigDict(populate_by_name=True)

@@ -1,21 +1,25 @@
+import logging
+
 import aio_pika
 from aio_pika import ExchangeType
+from aiormq.exceptions import ChannelPreconditionFailed
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Exchanges
-# All work exchanges are direct — routing key == queue name, explicit and
-# debuggable. No wildcard routing needed; each dispatcher knows exactly which
-# queue it is targeting.
-# The dead-letter exchange (dlx) is also direct — rejected/expired messages
-# route to their corresponding dlq.* queue by exact key match.
+# Work exchanges use TOPIC type to support dynamic routing keys (e.g., gpu.embed.{model}).
+# Each dispatcher publishes to the appropriate exchange with its routing key pattern.
+# The dead-letter exchange (dlx) is direct — rejected/expired messages route to
+# their corresponding dlq.* queue by exact key match.
 # ---------------------------------------------------------------------------
 
 EXCHANGES: dict[str, str] = {
-    "ingestion": str(ExchangeType.DIRECT),  # CPU: post chunking and pre-processing
-    "embedding": str(ExchangeType.DIRECT),  # GPU: text embedding, routed by model
-    "inference": str(ExchangeType.DIRECT),  # GPU local + IO API inference tasks
-    "search":    str(ExchangeType.DIRECT),  # CPU: search execution and ranking
-    "dlx":       str(ExchangeType.DIRECT),  # Dead-letter exchange (catches rejected/expired messages)
+    "ingestion": ExchangeType.TOPIC,  # CPU: post chunking and pre-processing
+    "embedding": ExchangeType.TOPIC,  # GPU: text embedding, routed by model
+    "inference": ExchangeType.TOPIC,  # GPU local + IO API inference tasks
+    "search":    ExchangeType.TOPIC,  # CPU: search execution and ranking
+    "dlx":       ExchangeType.DIRECT,  # Dead-letter exchange (catches rejected/expired messages)
 }
 
 # ---------------------------------------------------------------------------
@@ -59,29 +63,66 @@ _WORK_QUEUES: list[str] = [q for bindings in BINDINGS.values() for _, q in bindi
 DLQ_QUEUES:   list[str] = [f"dlq.{q}" for q in _WORK_QUEUES]
 
 
-async def setup_topology(channel: aio_pika.Channel) -> None:
-    """Declare all exchanges, work queues, DLQs, and bindings in dependency order."""
+async def setup_topology(connection: aio_pika.abc.AbstractRobustConnection) -> None:
+    """Declare all exchanges, work queues, DLQs, and bindings in dependency order.
 
-    # 1. Declare all exchanges (dlx must exist before work queues reference it)
-    declared: dict[str, aio_pika.Exchange] = {}
-    for name, kind in EXCHANGES.items():
-        declared[name] = await channel.declare_exchange(name, kind, durable=True)
+    Accepts a *connection* (not a channel) so it can open fresh channels when a
+    work queue has a stale definition.  RabbitMQ closes the channel with
+    PRECONDITION_FAILED if a queue is redeclared with different arguments (e.g.
+    a queue that existed before DLX args were added).  Opening a new channel per
+    work queue lets us catch that error, delete the stale queue, and redeclare it
+    correctly — without aborting the whole topology setup.
+    """
 
-    # 2. Declare DLQs and bind to dlx
-    for dlq_name in DLQ_QUEUES:
-        dlq = await channel.declare_queue(dlq_name, durable=True)
-        await dlq.bind(declared["dlx"], routing_key=dlq_name)
+    # 1. Declare all exchanges and DLQs on a shared channel.
+    #    Neither exchanges nor DLQs carry args that change over time, so
+    #    idempotent redeclaration is always safe here.
+    async with connection.channel() as channel:
+        declared: dict[str, aio_pika.abc.AbstractExchange] = {}
+        for name, kind in EXCHANGES.items():
+            declared[name] = await channel.declare_exchange(name, kind, durable=True)
 
-    # 3. Declare work queues (with dlx args) and bind to their exchange
+        for dlq_name in DLQ_QUEUES:
+            dlq = await channel.declare_queue(dlq_name, durable=True)
+            await dlq.bind(declared["dlx"], routing_key=dlq_name)
+
+    # 2. Declare work queues with DLX args.  Each queue gets its own channel so
+    #    a PRECONDITION_FAILED on one queue doesn't close the shared channel and
+    #    abort the rest.
     for exchange_name, bindings in BINDINGS.items():
-        exchange = declared[exchange_name]
         for routing_key, queue_name in bindings:
-            queue = await channel.declare_queue(
-                queue_name,
-                durable=True,
-                arguments={
-                    "x-dead-letter-exchange":    "dlx",
-                    "x-dead-letter-routing-key": f"dlq.{queue_name}",
-                },
-            )
-            await queue.bind(exchange, routing_key=routing_key)
+            await _ensure_work_queue(connection, exchange_name, routing_key, queue_name)
+
+
+async def _ensure_work_queue(
+    connection: aio_pika.abc.AbstractRobustConnection,
+    exchange_name: str,
+    routing_key: str,
+    queue_name: str,
+) -> None:
+    """Declare a work queue with DLX args, deleting stale definitions if needed.
+
+    If the queue already exists with different arguments (e.g. it was originally
+    declared without a dead-letter exchange), RabbitMQ raises
+    ``ChannelPreconditionFailed`` and closes the channel.  We catch that,
+    delete the stale queue on a fresh channel, then redeclare it correctly.
+    """
+    args = {
+        "x-dead-letter-exchange":    "dlx",
+        "x-dead-letter-routing-key": f"dlq.{queue_name}",
+    }
+    try:
+        async with connection.channel() as ch:
+            queue = await ch.declare_queue(queue_name, durable=True, arguments=args)
+            await queue.bind(exchange_name, routing_key=routing_key)
+    except ChannelPreconditionFailed:
+        logger.warning(
+            "Queue %r has stale definition (missing DLX args) — deleting and recreating",
+            queue_name,
+        )
+        async with connection.channel() as ch:
+            stale = await ch.declare_queue(queue_name, passive=True)
+            await stale.delete(if_unused=False, if_empty=False)
+        async with connection.channel() as ch:
+            queue = await ch.declare_queue(queue_name, durable=True, arguments=args)
+            await queue.bind(exchange_name, routing_key=routing_key)

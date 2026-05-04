@@ -29,18 +29,18 @@ from event_driven_rag_service.tasks.registry import TASK_ROUTES, parse_task
 # ---------------------------------------------------------------------------
 
 def test_chunk_task_table_name_body():
-    task = ChunkTask(task_type="body", post_id=1, post_table="posts", embed_model="bge-base-v1.5")
-    assert task.chunk_table_name() == "chunks_body_bge_base_v1_5"
+    task = ChunkTask(task_type="body", post_id=1, post_table="posts_main", embed_model="bge-base-v1.5")
+    assert task.chunk_table_name() == "posts_main_chunks_body_bge_base_v1_5"
 
 
 def test_chunk_task_table_name_summary_title():
-    task = ChunkTask(task_type="summary_title", post_id=1, post_table="posts", embed_model="bge-base-v1.5")
-    assert task.chunk_table_name() == "chunks_summary_title_bge_base_v1_5"
+    task = ChunkTask(task_type="summary_title", post_id=1, post_table="posts_main", embed_model="bge-base-v1.5")
+    assert task.chunk_table_name() == "posts_main_chunks_summary_title_bge_base_v1_5"
 
 
 def test_chunk_task_table_name_analysis_with_different_model():
-    task = ChunkTask(task_type="analysis", post_id=1, post_table="posts", embed_model="qwen3-0.6b")
-    assert task.chunk_table_name() == "chunks_analysis_qwen3_0_6b"
+    task = ChunkTask(task_type="analysis", post_id=1, post_table="posts_main", embed_model="qwen3-0.6b")
+    assert task.chunk_table_name() == "posts_main_chunks_analysis_qwen3_0_6b"
 
 
 def test_chunk_task_kind_is_always_chunk():

@@ -20,7 +20,7 @@ import asyncpg
 
 from event_driven_rag_service.config.settings import settings
 from event_driven_rag_service.config.embedding_config import EMBED_CONFIGS
-from event_driven_rag_service.infrastructure.event_bus import create_event_bus
+from event_driven_rag_service.infrastructure.event_bus import create_event_bus, PostgresEventBus
 from event_driven_rag_service.repository.chunk_repository import ChunkRepository
 from event_driven_rag_service.worker.gpu_worker import GpuEmbedWorker
 from event_driven_rag_service.handlers.embed_handler import EmbedHandler
@@ -62,7 +62,6 @@ def _load_model(model_name: str) -> Any:
             "sentence-transformers not available — falling back to mock. "
             "Install via: pip install sentence-transformers"
         )
-        return _MockEmbeddingModel(model_name)
 
 
 class _MockEmbeddingModel:
@@ -106,11 +105,14 @@ async def _setup():
     logger.info("Database pool ready")
 
     event_bus = create_event_bus(pool)
-    if hasattr(event_bus, "setup_tables"):
+    if isinstance(event_bus, PostgresEventBus):
         await event_bus.setup_tables()
     logger.info("Event bus ready (type=%s)", event_bus.__class__.__name__)
 
+    # Chunk tables are created lazily by CpuChunkWorker / ChunkPostHandler
+    # when the first chunk task arrives. This allows per-library table isolation.
     chunk_repo = ChunkRepository(pool)
+    logger.info("ChunkRepository ready (lazy table creation)")
     return pool, event_bus, chunk_repo
 
 

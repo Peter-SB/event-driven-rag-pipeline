@@ -18,7 +18,7 @@ class EventBusBase(ABC):
     async def publish(self, topic: str, event: dict) -> None: ...
 
     @abstractmethod
-    async def subscribe(self, topic: str, consumer_group: str) -> AsyncIterator[dict]: ...
+    def subscribe(self, topic: str, consumer_group: str) -> AsyncIterator[dict]: ...
 
 
 class RedpandaEventBus(EventBusBase):
@@ -68,7 +68,8 @@ class RedpandaEventBus(EventBusBase):
         logger.info("RedpandaEventBus consumer started (topic=%s group=%s)", topic, consumer_group)
         try:
             async for msg in consumer:
-                yield json.loads(msg.value)
+                if msg.value is not None:
+                    yield json.loads(msg.value)
         finally:
             await consumer.stop()
 
@@ -101,7 +102,7 @@ class PostgresEventBus(EventBusBase):
         async with self._pool.acquire() as conn:
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS event_log (
-                    id          BIGSERIAL PRIMARY KEY,
+                    id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
                     topic       TEXT        NOT NULL,
                     payload     JSONB       NOT NULL,
                     occurred_at TIMESTAMPTZ NOT NULL DEFAULT now()

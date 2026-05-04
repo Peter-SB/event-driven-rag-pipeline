@@ -72,8 +72,7 @@ GPU workers are designed to minimize model load times and maximize throughput by
 
 **Observability:** Observability is a core design principle for this project. The system is designed to be observable with logs, metrics, and tracing to provide visibility into the behavior of the system, measure performance, and help with debugging. The observability stack is optional for homelab/dev environments to keep resource usage low, but can be enabled for production or when needed.
 
-**Testability:** A good test strategy is core especially for a complicated distributed system. Testing code should be treated with the same care and attention as production code. Test should focus on testing two layers. Tasks test should test tasks in isolation with mocked dependencies to verify the core logic of each task. Then also test for o......................
-Tests should be well-structured, meaningful, and maintainable. They should provide confidence that the system works as expected and help catch regressions early. Tests should also be documented to explain their purpose, criteria for success, and any important context or setup.
+**Testability:** A good test strategy is critical, especially for a complicated distributed system. Testing code should be treated with the same care and attention as production code. Tests should focus on multiple layers: unit tests verify isolated task logic with mocked dependencies, integration tests verify component interaction with real infrastructure, and end-to-end tests verify the complete pipeline. Tests should be well-structured, meaningful, and maintainable. They should provide confidence that the system works as expected and help catch regressions early. Tests should also be documented to explain their purpose, criteria for success, and any important context or setup.
 
 **Reliable and Scalable Architecture:** The architecture is designed to be reliable and scalable, with a focus patterns used in production systems. By using an event-driven architecture with a clear separation of concerns, we can build a system that is resilient to failures, can handle increasing loads, and can be extended with new features or components without requiring changes to existing code.
 
@@ -130,10 +129,10 @@ A search job is created via the API and is saved to the database. An event is em
 # Table Naming Conventions
 
 ## Database  
-post table: `posts`
-chunk table: `chunks.{data_type}.{model}` e.g chunks.body.qwen3-06B
+post table: `posts_{id}` where id come from the client and is the key for that library. E.g `posts_main`, `posts_work`, `posts_test`. This always comes from client
+chunk table: `posts_{id}.chunks.{data_type}.{model}` e.g `posts_main.chunks.body.qwen3-06B`
 embeddings are tightly coupled to chunks, so stored in the same table with a pgvector column for the embedding vector.
-search job table: `search_jobs`
+search job table: `posts_{id}.search_jobs`
 
 ## Events
 `{entity}.{past_tense_verb}` e.g `post.synced`, `chunk.created`, `embedding.completed`, `search_query.embedded`

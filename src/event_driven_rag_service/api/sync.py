@@ -11,10 +11,11 @@ The event triggers the downstream chunk → embed pipeline via:
 from __future__ import annotations
 
 import logging
+import re
 from typing import List, Optional
 
 from fastapi import APIRouter, Request, status
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from event_driven_rag_service.data_models.post import Post
 from event_driven_rag_service.events.post_events import PostSyncedEvent
@@ -29,7 +30,17 @@ router = APIRouter(prefix="/posts", tags=["posts"])
 
 class SyncRequest(BaseModel):
     posts: List[Post]
-    table_name: str = Field("posts", description="Override target posts table name")
+    library_id: str = Field(..., description="Library identifier (e.g., 'main', 'work'). Required.")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    @field_validator("library_id", mode="before")
+    @classmethod
+    def _validate_library_id(cls, v: str) -> str:
+        """Library ID must start with a letter and contain only lowercase letters, digits, and underscores."""
+        if not v or not re.match(r"^[a-z][a-z0-9_]*$", v):
+            raise ValueError("library_id must start with [a-z] and contain only [a-z0-9_]")
+        return v
 
 
 class PostSyncResult(BaseModel):
@@ -59,10 +70,18 @@ async def sync_posts(req: SyncRequest, request: Request) -> SyncResponse:
     """Accept a batch of posts, persist them, and fire post.synced for changed posts."""
     post_repo = request.app.state.post_repo
     event_bus = request.app.state.event_bus
+    post_table = f"posts_{req.library_id}"
+
+    # Lazy table creation: ensure the post table exists on first sync
+    seen_tables = request.app.state.seen_post_tables
+    if post_table not in seen_tables:
+        await post_repo.ensure_table(post_table)
+        seen_tables.add(post_table)
+        logger.info("sync_posts: ensured post table %s", post_table)
 
     logger.info(
         "sync_posts: table=%s count=%d ids=%s",
-        req.table_name,
+        post_table,
         len(req.posts),
         [p.post_id for p in req.posts],
     )
@@ -71,12 +90,12 @@ async def sync_posts(req: SyncRequest, request: Request) -> SyncResponse:
 
     for post in req.posts:
         try:
-            sync_status, _ = await post_repo.upsert(post)
+            sync_status, _ = await post_repo.upsert(post, post_table)
 
             if sync_status != "skipped":
                 event = PostSyncedEvent(
                     post_id=post.post_id,
-                    post_table=req.table_name,
+                    post_table=post_table,
                     has_summary=bool(post.summary),
                     # Empty fields_changed on insert means "everything is new".
                     # On update we conservatively mark all text fields changed so
@@ -109,16 +128,3 @@ async def sync_posts(req: SyncRequest, request: Request) -> SyncResponse:
         [r.status for r in results],
     )
     return SyncResponse(results=results)
-
-#       rating: post.rating ?? undefined,
-#       isRead: post.isRead,
-#       isFavorite: post.isFavorite,
-#       isDeleted: Boolean(post.isDeleted),
-#       isArchived: Boolean(post.isArchived),
-#       readAt: post.readAt ?? undefined,
-#       queuedAt: post.queuedAt ?? undefined,
-#       folderIds: post.folderIds ?? [],
-#       extraFields: post.extraFields ?? undefined,
-#       bodyMinHash: post.bodyMinHash ?? undefined,
-#       summary: post.summary ?? undefined,
-#     };

@@ -43,7 +43,7 @@ class PostDispatcher:
     async def _handle_post_synced(self) -> None:
         channel = await self._rmq.channel()
         route = TASK_ROUTES["chunk"]
-        exchange = await channel.get_exchange(route.exchange)
+        exchange = await channel.declare_exchange(route.exchange, aio_pika.ExchangeType.TOPIC, durable=True)
 
         async for event in self._event_bus.subscribe(
             "post.synced", consumer_group=consumer_groups.POST_SYNCED
@@ -57,7 +57,7 @@ class PostDispatcher:
                 )
 
     async def _dispatch_chunk_tasks(
-        self, exchange: aio_pika.Exchange, event: dict
+        self, exchange: aio_pika.abc.AbstractExchange, event: dict
     ) -> None:
         post_id = event["post_id"]
         post_table = event["post_table"]
