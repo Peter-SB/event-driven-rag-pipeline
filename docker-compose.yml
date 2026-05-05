@@ -157,6 +157,7 @@ services:
       RABBITMQ_URL: "amqp://rag:rag@rabbitmq:5672/"
       REDPANDA_SERVERS: "redpanda:29092"
       EVENT_BUS: "${EVENT_BUS:-postgres}"
+      MOCK_EMBEDDINGS: "${MOCK_EMBEDDINGS:-1}"
     networks:
       - rag
     depends_on:

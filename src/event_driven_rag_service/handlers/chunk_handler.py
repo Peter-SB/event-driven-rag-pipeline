@@ -20,10 +20,11 @@ import hashlib
 import logging
 import uuid
 from datetime import datetime, UTC
-from typing import Protocol, TypedDict
+from typing import Protocol
 
 from event_driven_rag_service.config.embedding_config import CHUNK_CONFIG, EMBED_CONFIGS
 from event_driven_rag_service.data_models.chunk import Chunk, ChunkMetadata
+from event_driven_rag_service.data_models.post import Post
 from event_driven_rag_service.events.chunk_events import ChunksCreatedEvent
 from event_driven_rag_service.infrastructure.event_bus import EventBusBase
 from event_driven_rag_service.tasks.chunk_task import ChunkTask
@@ -129,20 +130,9 @@ def _build_chunks(
 # Repository protocols  (inject real Postgres implementations at startup)
 # ---------------------------------------------------------------------------
 
-class PostRow(TypedDict, total=False):
-    """Typed shape of a post row as returned by PostFetcher.fetch."""
-    updated_at: str | None
-    title: str | None
-    external_id: str | None
-    custom_body: str | None
-    body_text: str | None
-    summary: str | None
-    analysis_text: str | None
-
-
 class PostFetcher(Protocol):
-    """Fetch a single post row as a typed dict."""
-    async def fetch(self, post_id: int, table_name: str) -> PostRow: ...
+    """Fetch a single post."""
+    async def fetch(self, post_id: int, table_name: str) -> Post | None: ...
 
 
 class ChunkStore(Protocol):
@@ -189,6 +179,10 @@ class ChunkPostHandler:
         Returns an empty list when text is missing or all chunks are already current.
         """
         post = await self._posts.fetch(task.post_id, task.post_table)
+        if not post:
+            logger.warning("ChunkPostHandler: post %d not found", task.post_id)
+            return []
+
         text = self._resolve_text(task, post)
 
         if not text:
@@ -200,7 +194,7 @@ class ChunkPostHandler:
             return []
 
         chunk_table = task.chunk_table_name()
-        post_updated_at = str(post.get("updated_at", "") or "")
+        post_updated_at = str(getattr(post, "updated_at", "") or "")
 
         # Get vector dimension for this task type from embedding config
         embed_config = EMBED_CONFIGS.get(task.task_type)
@@ -223,8 +217,8 @@ class ChunkPostHandler:
             post_id=task.post_id,
             post_updated_at=post_updated_at,
             text=text,
-            title=post.get("title"),
-            external_id=post.get("external_id"),
+            title=getattr(post, "title"),
+            external_id=getattr(post, "external_id"),
         )
 
         new_chunks = [c for c in all_chunks if c.text_hash not in existing_hashes]
@@ -263,18 +257,18 @@ class ChunkPostHandler:
         return chunk_ids
 
     @staticmethod
-    def _resolve_text(task: ChunkTask, post: PostRow) -> str | None:
+    def _resolve_text(task: ChunkTask, post: Post) -> str | None:
         """Return the correct text for this task_type."""
         if task.task_type == "body":
-            return post.get("custom_body") or post.get("body_text")
+            return getattr(post, "custom_body") or getattr(post, "body_text")
 
         if task.task_type == "summary_title":
-            title   = (post.get("title") or "").strip()
-            summary = (post.get("summary") or "").strip()
+            title   = (getattr(post, "title") or "").strip()
+            summary = (getattr(post, "summary") or "").strip()
             combined = "\n\n".join(part for part in (title, summary) if part)
             return combined or None
 
         if task.task_type == "analysis":
-            return task.analysis_text or post.get("analysis_text")
+            return task.analysis_text or getattr(post, "analysis_text")
 
         return None

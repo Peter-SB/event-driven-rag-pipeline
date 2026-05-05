@@ -1,6 +1,7 @@
-"""Health checks for task queue (RabbitMQ) and event bus (PostgresEventBus).
+"""RabbitMQ health checks for the Docker Compose stack.
 
-Simple smoke tests to confirm both messaging layers are reachable and functional.
+Pre-flight smoke tests confirming the task queue is reachable and functional:
+connection, queue declaration, and a publish/consume roundtrip.
 """
 import json
 import pytest

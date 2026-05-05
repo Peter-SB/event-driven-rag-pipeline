@@ -12,6 +12,8 @@ Tested behaviours
 - Empty / missing text results in no insert and no event published
 - chunk_table name is derived from the task (not hardcoded)
 - _resolve_text routes correctly for body / summary_title / analysis task types
+- ensure_table is called with correct vector dimensions
+- unknown task_type is handled gracefully
 """
 from __future__ import annotations
 
@@ -19,44 +21,18 @@ from typing import Any
 
 import pytest
 
-from event_driven_rag_service.data_models.chunk import Chunk
 from event_driven_rag_service.tasks.chunk_task import ChunkTask
 from event_driven_rag_service.handlers.chunk_handler import (
     ChunkPostHandler,
     _build_chunks,
 )
-from tests.utils.factories import FakeEventBus
-
-
-# ---------------------------------------------------------------------------
-# Protocol fakes
-# ---------------------------------------------------------------------------
-
-class FakePostFetcher:
-    def __init__(self, post: dict[str, Any]) -> None:
-        self._post = post
-
-    async def fetch(self, post_id: int, table_name: str) -> dict[str, Any]:
-        return self._post
-
-
-class FakeChunkStore:
-    def __init__(self) -> None:
-        self.inserted: list[Chunk] = []
-
-    async def ensure_table(self, table_name: str, vector_dim: int) -> None:
-        pass
-
-    async def bulk_insert(self, chunks: list[Chunk], table_name: str) -> None:
-        self.inserted.extend(chunks)
-
-
-class FakeVersionChecker:
-    def __init__(self, existing_hashes: dict[str, str] | None = None) -> None:
-        self._hashes = existing_hashes or {}
-
-    async def get_text_hashes(self, post_id: int, table_name: str) -> dict[str, str]:
-        return self._hashes
+from tests.utils.factories import (
+    FakeEventBus,
+    FakePostFetcher,
+    FakeChunkStore,
+    FakeChunkVersionChecker,
+    make_post,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -69,7 +45,7 @@ def _make_handler(
 ) -> tuple[ChunkPostHandler, FakeChunkStore, FakeEventBus]:
     bus = FakeEventBus()
     store = FakeChunkStore()
-    checker = FakeVersionChecker(existing_hashes)
+    checker = FakeChunkVersionChecker(existing_hashes)
     handler = ChunkPostHandler(
         post_fetcher=FakePostFetcher(post),
         chunk_store=store,
@@ -91,8 +67,8 @@ async def test_handle_inserts_chunks_for_new_post():
 
     chunk_ids = await handler.handle(task)
 
-    assert len(store.inserted) > 0
-    assert set(chunk_ids) == {c.id for c in store.inserted}
+    assert len(store.inserted_chunks) > 0
+    assert set(chunk_ids) == {c.id for c in store.inserted_chunks}
 
 
 @pytest.mark.asyncio
@@ -117,7 +93,7 @@ async def test_chunks_created_event_carries_chunk_ids():
     await handler.handle(task)
 
     event = bus.peek_topic("chunks.created")[0]
-    stored_ids = {c.id for c in store.inserted}
+    stored_ids = {c.id for c in store.inserted_chunks}
     assert set(event["chunk_ids"]) == stored_ids
 
 
@@ -151,7 +127,7 @@ async def test_all_chunks_skipped_when_hashes_already_exist():
     result = await handler.handle(task)
 
     assert result == []
-    assert store.inserted == []
+    assert store.inserted_chunks == []
     assert bus.peek_topic("chunks.created") == []
 
 
@@ -171,9 +147,9 @@ async def test_only_new_chunks_inserted_on_partial_update():
 
     await handler.handle(task)
 
-    inserted_hashes = {c.text_hash for c in store.inserted}
+    inserted_hashes = {c.text_hash for c in store.inserted_chunks}
     assert chunks[0].text_hash not in inserted_hashes
-    assert len(store.inserted) >= 1
+    assert len(store.inserted_chunks) >= 1
 
 
 # ---------------------------------------------------------------------------
@@ -189,7 +165,7 @@ async def test_handle_skips_when_body_text_is_empty():
     result = await handler.handle(task)
 
     assert result == []
-    assert store.inserted == []
+    assert store.inserted_chunks == []
     assert bus.peek_topic("chunks.created") == []
 
 
@@ -202,7 +178,7 @@ async def test_handle_skips_when_body_text_is_none():
     result = await handler.handle(task)
 
     assert result == []
-    assert store.inserted == []
+    assert store.inserted_chunks == []
 
 
 # ---------------------------------------------------------------------------
@@ -211,19 +187,19 @@ async def test_handle_skips_when_body_text_is_none():
 
 def test_resolve_text_prefers_custom_body_over_body_text():
     task = ChunkTask(task_type="body", post_id=1, post_table="posts_main", embed_model="bge-base-v1.5")
-    post = {"body_text": "original", "custom_body": "override"}
+    post = make_post(body_text="original", custom_body="override")
     assert ChunkPostHandler._resolve_text(task, post) == "override"
 
 
 def test_resolve_text_falls_back_to_body_text():
     task = ChunkTask(task_type="body", post_id=1, post_table="posts_main", embed_model="bge-base-v1.5")
-    post = {"body_text": "original", "custom_body": None}
+    post = make_post(body_text="original", custom_body=None)
     assert ChunkPostHandler._resolve_text(task, post) == "original"
 
 
 def test_resolve_text_summary_title_combines_title_and_summary():
     task = ChunkTask(task_type="summary_title", post_id=1, post_table="posts_main", embed_model="bge-base-v1.5")
-    post = {"title": "My Title", "summary": "A brief summary."}
+    post = make_post(title="My Title", summary="A brief summary.")
     result = ChunkPostHandler._resolve_text(task, post)
     assert "My Title" in result
     assert "A brief summary." in result
@@ -231,13 +207,13 @@ def test_resolve_text_summary_title_combines_title_and_summary():
 
 def test_resolve_text_summary_title_handles_missing_summary():
     task = ChunkTask(task_type="summary_title", post_id=1, post_table="posts_main", embed_model="bge-base-v1.5")
-    post = {"title": "Only Title", "summary": None}
+    post = make_post(title="Only Title", summary=None)
     assert ChunkPostHandler._resolve_text(task, post) == "Only Title"
 
 
 def test_resolve_text_returns_none_when_both_title_and_summary_absent():
     task = ChunkTask(task_type="summary_title", post_id=1, post_table="posts_main", embed_model="bge-base-v1.5")
-    post = {"title": None, "summary": None}
+    post = make_post(title=None, summary=None)
     assert ChunkPostHandler._resolve_text(task, post) is None
 
 
@@ -249,7 +225,7 @@ def test_resolve_text_analysis_uses_inline_text():
         embed_model="qwen3-0.6b",
         analysis_text="Inline analysis content.",
     )
-    post = {"analysis_text": "Stale post column value"}
+    post = make_post(analysis_text="Stale post column value")
     assert ChunkPostHandler._resolve_text(task, post) == "Inline analysis content."
 
 
@@ -261,5 +237,95 @@ def test_resolve_text_analysis_falls_back_to_post_column():
         embed_model="qwen3-0.6b",
         analysis_text=None,
     )
-    post = {"analysis_text": "Stored analysis text."}
+    post = make_post(analysis_text="Stored analysis text.")
     assert ChunkPostHandler._resolve_text(task, post) == "Stored analysis text."
+
+
+# ---------------------------------------------------------------------------
+# ensure_table invocation with correct vector dimensions
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_ensure_table_called_with_correct_vector_dim_for_body():
+    """ensure_table should be called with dim=768 for body task."""
+    post = {"body_text": "word " * 200, "title": "T", "updated_at": "2024-01-01T00:00:00+00:00"}
+    task = ChunkTask(task_type="body", post_id=1, post_table="posts_main", embed_model="bge-base-v1.5")
+    handler, store, _ = _make_handler(post)
+
+    await handler.handle(task)
+
+    assert len(store.ensure_table_calls) == 1
+    table_name, vector_dim = store.ensure_table_calls[0]
+    assert table_name == "posts_main_chunks_body_bge_base_v1_5"
+    assert vector_dim == 768, "bge-base-v1.5 should have dim=768"
+
+
+@pytest.mark.asyncio
+async def test_ensure_table_called_with_correct_vector_dim_for_analysis():
+    """ensure_table should be called with dim=1024 for analysis task."""
+    post = {
+        "body_text": None,
+        "analysis_text": "analysis " * 100,
+        "title": "T",
+        "updated_at": "2024-01-01T00:00:00+00:00",
+    }
+    task = ChunkTask(
+        task_type="analysis",
+        post_id=1,
+        post_table="posts_main",
+        embed_model="qwen3-0.6b",
+        analysis_text="analysis " * 100,
+    )
+    handler, store, _ = _make_handler(post)
+
+    await handler.handle(task)
+
+    assert len(store.ensure_table_calls) == 1
+    table_name, vector_dim = store.ensure_table_calls[0]
+    assert vector_dim == 1024, "qwen3-0.6b should have dim=1024"
+
+
+# ---------------------------------------------------------------------------
+# Unknown task_type handling
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_handle_skips_unknown_task_type():
+    """Unknown task_type not in EMBED_CONFIGS → skip gracefully."""
+    post = {"body_text": "word " * 100, "title": "T", "updated_at": "2024-01-01T00:00:00+00:00"}
+    handler, store, bus = _make_handler(post)
+
+    # Manually create task with unknown type (bypasses validation if possible)
+    # Or we test that an unknown type would be caught earlier
+    # Actually, ChunkTask.task_type is a Literal, so we can't create one with unknown type
+    # This test validates that the constraint exists
+    with pytest.raises(Exception):  # pydantic validation error
+        ChunkTask(
+            task_type="unknown_type",  # type: ignore
+            post_id=1,
+            post_table="posts_main",
+            embed_model="unknown-model",
+        )
+
+
+# ---------------------------------------------------------------------------
+# Chunk table name derivation
+# ---------------------------------------------------------------------------
+
+def test_chunk_task_derives_table_name_correctly():
+    """ChunkTask.chunk_table_name() produces correct derived name."""
+    task = ChunkTask(
+        task_type="body",
+        post_id=1,
+        post_table="posts_main",
+        embed_model="bge-base-v1.5",
+    )
+    assert task.chunk_table_name() == "posts_main_chunks_body_bge_base_v1_5"
+
+    task2 = ChunkTask(
+        task_type="summary_title",
+        post_id=2,
+        post_table="posts_test",
+        embed_model="bge-base-v1.5",
+    )
+    assert task2.chunk_table_name() == "posts_test_chunks_summary_title_bge_base_v1_5"

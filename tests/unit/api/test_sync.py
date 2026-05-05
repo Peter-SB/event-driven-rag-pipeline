@@ -43,8 +43,14 @@ def app_with_mocked_state():
 
 @pytest.fixture
 def client(app_with_mocked_state):
-    """TestClient for the mocked FastAPI app."""
-    return TestClient(app_with_mocked_state)
+    """TestClient for the mocked FastAPI app.
+
+    Used as a context manager so Starlette creates ONE anyio portal for the
+    entire test — all requests share the same thread and app.state is preserved
+    across multiple client.post() calls within the same test.
+    """
+    with TestClient(app_with_mocked_state) as c:
+        yield c
 
 
 # ---------------------------------------------------------------------------
@@ -57,7 +63,8 @@ def test_sync_single_post_insert(client):
     post_repo = client.app.state.post_repo
     event_bus = client.app.state.event_bus
 
-    # Mock: upsert returns ('inserted', version)
+    # Mock: fetch returns None (no existing post), upsert returns ('inserted', version)
+    post_repo.fetch.return_value = None
     post_repo.upsert.return_value = ("inserted", 1)
 
     response = client.post(
@@ -83,7 +90,7 @@ def test_sync_single_post_insert(client):
     evt = events[0]
     assert evt["post_id"] == 1
     assert evt["post_table"] == "posts_main"
-    assert evt["fields_changed"] == []  # Empty on insert
+    assert evt["fields_changed"] == [], "Expected all fields changed on initial insert, but got: %s" % evt["fields_changed"]
     assert evt["has_summary"] is True
 
 
@@ -392,3 +399,214 @@ def test_sync_event_updated_at_matches_post(client):
     from datetime import datetime as dt
     parsed = dt.fromisoformat(evt["updated_at"].replace('Z', '+00:00'))
     assert parsed == ts
+
+
+# ---------------------------------------------------------------------------
+# Table creation and library ID isolation
+# ---------------------------------------------------------------------------
+
+def test_sync_creates_post_table_on_first_sync_for_library(client):
+    """First sync with a library_id calls ensure_table for that library's post table."""
+    post = make_post(post_id=100)
+    post_repo = client.app.state.post_repo
+
+    post_repo.upsert.return_value = ("inserted", 1)
+    post_repo.ensure_table = AsyncMock()
+
+    response = client.post(
+        "/posts/sync",
+        json={
+            "posts": [post.model_dump(by_alias=True, mode='json')],
+            "library_id": "main",
+        }
+    )
+
+    assert response.status_code == 200
+    post_repo.ensure_table.assert_called_once_with("posts_main")
+
+
+def test_sync_does_not_recreate_table_on_second_sync_same_library(client):
+    """Second sync with the same library_id does NOT call ensure_table again."""
+    post = make_post(post_id=101)
+    post_repo = client.app.state.post_repo
+
+    post_repo.upsert.return_value = ("inserted", 1)
+    post_repo.ensure_table = AsyncMock()
+
+    # First sync
+    response1 = client.post(
+        "/posts/sync",
+        json={
+            "posts": [post.model_dump(by_alias=True, mode='json')],
+            "library_id": "main",
+        }
+    )
+    assert response1.status_code == 200
+    assert post_repo.ensure_table.call_count == 1
+
+    # Second sync same library — must NOT call ensure_table again
+    post2 = make_post(post_id=102)
+    response2 = client.post(
+        "/posts/sync",
+        json={
+            "posts": [post2.model_dump(by_alias=True, mode='json')],
+            "library_id": "main",
+        }
+    )
+    assert response2.status_code == 200
+    assert post_repo.ensure_table.call_count == 1
+
+
+def test_sync_creates_separate_tables_for_different_libraries(client):
+    """Different library_ids trigger ensure_table for separate post tables."""
+    post1 = make_post(post_id=110)
+    post2 = make_post(post_id=111)
+    post_repo = client.app.state.post_repo
+
+    post_repo.upsert.return_value = ("inserted", 1)
+    post_repo.ensure_table = AsyncMock()
+
+    client.post(
+        "/posts/sync",
+        json={"posts": [post1.model_dump(by_alias=True, mode='json')], "library_id": "main"},
+    )
+    client.post(
+        "/posts/sync",
+        json={"posts": [post2.model_dump(by_alias=True, mode='json')], "library_id": "work"},
+    )
+
+    assert post_repo.ensure_table.call_count == 2
+    calls = [call.args[0] for call in post_repo.ensure_table.call_args_list]
+    assert "posts_main" in calls
+    assert "posts_work" in calls
+
+
+def test_sync_tracks_created_tables_in_seen_post_tables(client):
+    """Verify seen_post_tables is updated after ensure_table succeeds."""
+    post = make_post(post_id=120)
+    post_repo = client.app.state.post_repo
+    seen_tables = client.app.state.seen_post_tables
+
+    post_repo.upsert.return_value = ("inserted", 1)
+    assert len(seen_tables) == 0
+
+    client.post(
+        "/posts/sync",
+        json={"posts": [post.model_dump(by_alias=True, mode='json')], "library_id": "main"},
+    )
+    assert "posts_main" in seen_tables
+    assert len(seen_tables) == 1
+
+    post2 = make_post(post_id=121)
+    client.post(
+        "/posts/sync",
+        json={"posts": [post2.model_dump(by_alias=True, mode='json')], "library_id": "secondary"},
+    )
+    assert "posts_main" in seen_tables
+    assert "posts_secondary" in seen_tables
+    assert len(seen_tables) == 2
+
+
+# ---------------------------------------------------------------------------
+# _evaluate_changed_fields — unit tests
+# ---------------------------------------------------------------------------
+
+def test_evaluate_changed_fields_returns_empty_list_when_no_existing():
+    """When existing is None (first sync), fields_changed must be empty."""
+    from event_driven_rag_service.api.sync import _evaluate_changed_fields
+
+    post = make_post(post_id=1)
+    result = _evaluate_changed_fields(post, None)
+    assert result == []
+
+
+def test_evaluate_changed_fields_returns_empty_when_nothing_changed():
+    """When existing post has identical field values, fields_changed must be empty."""
+    from event_driven_rag_service.api.sync import _evaluate_changed_fields
+
+    post = make_post(post_id=1, body_text="same", summary="same", title="same", custom_body="same", custom_title="same")
+    existing = make_post(post_id=1, body_text="same", summary="same", title="same", custom_body="same", custom_title="same")
+    result = _evaluate_changed_fields(post, existing)
+    assert result == []
+
+
+def test_evaluate_changed_fields_detects_body_text_change():
+    from event_driven_rag_service.api.sync import _evaluate_changed_fields
+
+    post = make_post(post_id=1, body_text="new body")
+    existing = make_post(post_id=1, body_text="old body")
+    result = _evaluate_changed_fields(post, existing)
+    assert result == ["body_text"]
+
+
+def test_evaluate_changed_fields_detects_custom_body_change():
+    from event_driven_rag_service.api.sync import _evaluate_changed_fields
+
+    post = make_post(post_id=1, custom_body="new custom")
+    existing = make_post(post_id=1, custom_body="old custom")
+    result = _evaluate_changed_fields(post, existing)
+    assert result == ["custom_body"]
+
+
+def test_evaluate_changed_fields_detects_summary_change():
+    from event_driven_rag_service.api.sync import _evaluate_changed_fields
+
+    post = make_post(post_id=1, summary="new summary")
+    existing = make_post(post_id=1, summary="old summary")
+    result = _evaluate_changed_fields(post, existing)
+    assert result == ["summary"]
+
+
+def test_evaluate_changed_fields_detects_title_change():
+    from event_driven_rag_service.api.sync import _evaluate_changed_fields
+
+    post = make_post(post_id=1, title="new title")
+    existing = make_post(post_id=1, title="old title")
+    result = _evaluate_changed_fields(post, existing)
+    assert result == ["title"]
+
+
+def test_evaluate_changed_fields_detects_custom_title_change():
+    from event_driven_rag_service.api.sync import _evaluate_changed_fields
+
+    post = make_post(post_id=1, custom_title="new custom title")
+    existing = make_post(post_id=1, custom_title="old custom title")
+    result = _evaluate_changed_fields(post, existing)
+    assert result == ["custom_title"]
+
+
+def test_evaluate_changed_fields_detects_multiple_changes():
+    from event_driven_rag_service.api.sync import _evaluate_changed_fields
+
+    post = make_post(post_id=1, body_text="new body", summary="new summary", title="new title")
+    existing = make_post(post_id=1, body_text="old body", summary="old summary", title="old title")
+    result = _evaluate_changed_fields(post, existing)
+    assert sorted(result) == sorted(["body_text", "summary", "title"])
+
+
+def test_evaluate_changed_fields_treats_none_as_empty_string():
+    """None vs empty string should NOT be treated as a change (both are 'empty')."""
+    from event_driven_rag_service.api.sync import _evaluate_changed_fields
+
+    post = make_post(post_id=1, summary=None)
+    existing = make_post(post_id=1, summary="")
+    result = _evaluate_changed_fields(post, existing)
+    assert result == []
+
+
+def test_evaluate_changed_fields_detects_none_to_value_change():
+    from event_driven_rag_service.api.sync import _evaluate_changed_fields
+
+    post = make_post(post_id=1, summary="now has summary")
+    existing = make_post(post_id=1, summary=None)
+    result = _evaluate_changed_fields(post, existing)
+    assert result == ["summary"]
+
+
+def test_evaluate_changed_fields_detects_value_to_none_change():
+    from event_driven_rag_service.api.sync import _evaluate_changed_fields
+
+    post = make_post(post_id=1, summary=None)
+    existing = make_post(post_id=1, summary="had summary")
+    result = _evaluate_changed_fields(post, existing)
+    assert result == ["summary"]

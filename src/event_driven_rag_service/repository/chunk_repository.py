@@ -29,31 +29,6 @@ from event_driven_rag_service.data_models.chunk import Chunk
 logger = logging.getLogger(__name__)
 
 
-_CREATE_TABLE_SQL = """
-CREATE EXTENSION IF NOT EXISTS vector;
-
-CREATE TABLE IF NOT EXISTS {table} (
-    id              UUID         PRIMARY KEY,
-    post_id         INTEGER      NOT NULL,
-    chunk_index     INTEGER      NOT NULL,
-    text            TEXT         NOT NULL,
-    embedding       vector({dim}),        -- NULL until GpuEmbedWorker fills it in
-    metadata        JSONB,
-    token_count     INTEGER,
-    text_hash       TEXT,
-    post_updated_at TIMESTAMPTZ,
-    created_at      TIMESTAMPTZ  NOT NULL DEFAULT now()
-);
-CREATE INDEX IF NOT EXISTS {table}_post_id_idx    ON {table} (post_id);
-CREATE INDEX IF NOT EXISTS {table}_text_hash_idx  ON {table} (post_id, text_hash);
-"""
-
-_CREATE_HNSW_INDEX_SQL = """
-CREATE INDEX IF NOT EXISTS {table}_embedding_hnsw
-ON {table}
-USING hnsw (embedding vector_cosine_ops)
-WITH (m = 16, ef_construction = 200);
-"""
 
 
 class ChunkRepository:
@@ -78,7 +53,6 @@ class ChunkRepository:
         self._pool = pool
         self._table_name = table_name
         self._vector_dim = vector_dim
-        self._seen_tables: set[str] = set()  # Cache to avoid repeated CREATE TABLE IF NOT EXISTS
 
     @property
     def table_name(self) -> Optional[str]:
@@ -95,12 +69,35 @@ class ChunkRepository:
         """
         table_name = (table_name or self._table_name).lower()
         vector_dim = vector_dim or self._vector_dim
-        if table_name in self._seen_tables:
-            return
-        sql = _CREATE_TABLE_SQL.format(table=table_name, dim=vector_dim)
+
+        if vector_dim is None:
+            raise ValueError("vector_dim must be provided either in ensure_table or __init__ when binding a table")
+        
         async with self._pool.acquire() as conn:
-            await conn.execute(sql)
-        self._seen_tables.add(table_name)
+            # Create pgvector extension
+            await conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+            
+            # Create table
+            create_table_sql = f"""
+            CREATE TABLE IF NOT EXISTS {table_name} (
+                id              UUID         PRIMARY KEY,
+                post_id         INTEGER      NOT NULL,
+                chunk_index     INTEGER      NOT NULL,
+                text            TEXT         NOT NULL,
+                embedding       vector({vector_dim}),
+                metadata        JSONB,
+                token_count     INTEGER,
+                text_hash       TEXT,
+                post_updated_at TIMESTAMPTZ,
+                created_at      TIMESTAMPTZ  NOT NULL DEFAULT now()
+            )
+            """
+            await conn.execute(create_table_sql)
+            
+            # Create indexes
+            await conn.execute(f"CREATE INDEX IF NOT EXISTS {table_name}_post_id_idx ON {table_name} (post_id)")
+            await conn.execute(f"CREATE INDEX IF NOT EXISTS {table_name}_text_hash_idx ON {table_name} (post_id, text_hash)")
+
         logger.info("ChunkRepository: table '%s' ready (dim=%d)", table_name, vector_dim)
 
     async def create_hnsw_index(self, table_name: str) -> None:
@@ -110,7 +107,12 @@ class ChunkRepository:
             table_name: The target table.
         """
         table_name = table_name.lower()
-        sql = _CREATE_HNSW_INDEX_SQL.format(table=table_name)
+        sql = f"""
+        CREATE INDEX IF NOT EXISTS {table_name}_embedding_hnsw
+        ON {table_name}
+        USING hnsw (embedding vector_cosine_ops)
+        WITH (m = 16, ef_construction = 200)
+        """
         async with self._pool.acquire() as conn:
             await conn.execute(sql)
 
@@ -124,11 +126,17 @@ class ChunkRepository:
         Used by CpuChunkWorker to skip chunks whose text is unchanged,
         avoiding unnecessary re-chunking and re-embedding.
 
+        When the repo is bound with a vector_dim, ensure_table is called first
+        so the table always exists before reading (idempotent CREATE TABLE IF
+        NOT EXISTS on every call — tolerates tables dropped externally).
+
         Args:
             post_id: The post ID to query.
             table_name: The target table. Falls back to bound table_name if not provided.
         """
         table_name = (table_name or self._table_name).lower()
+        if self._vector_dim is not None:
+            await self.ensure_table(table_name, self._vector_dim)
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 f"SELECT id, text_hash FROM {table_name} WHERE post_id = $1",
@@ -144,6 +152,8 @@ class ChunkRepository:
             table_name: The target table. Falls back to bound table_name if not provided.
         """
         table_name = (table_name or self._table_name).lower()
+        if self._vector_dim is not None:
+            await self.ensure_table(table_name, self._vector_dim)
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 f"SELECT id, post_updated_at FROM {table_name} WHERE post_id = $1",
@@ -163,6 +173,8 @@ class ChunkRepository:
             table_name: The target table. Falls back to bound table_name if not provided.
         """
         table_name = (table_name or self._table_name).lower()
+        if self._vector_dim is not None:
+            await self.ensure_table(table_name, self._vector_dim)
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 f"SELECT id, text FROM {table_name} WHERE id = ANY($1::uuid[])",

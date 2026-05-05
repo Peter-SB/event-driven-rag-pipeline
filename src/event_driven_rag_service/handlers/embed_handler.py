@@ -61,7 +61,7 @@ class EmbeddingModel(Protocol):
 
 class ChunkFetcher(Protocol):
     async def fetch_texts(
-        self, chunk_ids: list[str], table: str
+        self, chunk_ids: list[str], table_name: str
     ) -> list[tuple[str, str]]:
         """Return (chunk_id, text) pairs in the same order as chunk_ids."""
         ...

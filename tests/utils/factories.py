@@ -77,6 +77,7 @@ def make_post(
     summary: str | None = "A short summary.",
     updated_at: datetime | None = None,
     subreddit: str | None = "test",
+    title: str | None = "Test Post Title",
     **kwargs,
 ) -> Post:
     """Build a minimal valid Post. Override any field via kwargs."""
@@ -86,7 +87,7 @@ def make_post(
         redditId=f"ext_{post_id}",
         redditCreatedAt=_BASE_TS,
         url=f"https://reddit.com/r/test/comments/{post_id}",
-        title="Test Post Title",
+        title=title or "",
         bodyText=body_text,
         author="testuser",
         subreddit=subreddit,
@@ -102,6 +103,7 @@ def make_post_synced_event(
     has_summary: bool = True,
     fields_changed: list[str] | None = None,
     updated_at: datetime | None = None,
+    post_table: str = "posts", # todo: come back and check this table nameing is correct
 ) -> dict:
     """Build a post.synced event payload dict."""
     return {
@@ -110,7 +112,7 @@ def make_post_synced_event(
         "event_version": 1,
         "occurred_at": (_BASE_TS).isoformat(),
         "post_id": post_id,
-        "post_table": "posts",
+        "post_table": post_table,
         "has_summary": has_summary,
         "fields_changed": fields_changed if fields_changed is not None else [],
         "updated_at": (updated_at or _BASE_TS).isoformat(),
@@ -142,13 +144,14 @@ def make_chunks_created_event(
     post_id: int = 1,
     chunk_ids: list[str] | None = None,
     task_type: str = "body",
-    chunk_table: str = "chunks_body_bge_base_v1_5",
+    chunk_table: str = "posts_chunks_body_bge_base_v1_5",
+    post_table: str = "posts",
 ) -> dict:
     """Build a chunks.created event payload dict."""
     return {
         "event_id": f"evt-chunks-{post_id}",
         "post_id": post_id,
-        "post_table": "posts",
+        "post_table": post_table,
         "chunk_ids": chunk_ids or ["chunk-uuid-1", "chunk-uuid-2"],
         "chunk_table": chunk_table,
         "chunk_count": len(chunk_ids) if chunk_ids else 2,
@@ -184,3 +187,57 @@ class FakeExchange:
     @property
     def all_routing_keys(self) -> list[str]:
         return [rk for _, rk in self.published]
+
+
+# ---------------------------------------------------------------------------
+# Repository fakes for chunk handler unit tests
+# ---------------------------------------------------------------------------
+
+class FakePostFetcher:
+    """Returns a pre-configured Post for any (post_id, table_name)."""
+
+    def __init__(self, post: Post | dict | None = None) -> None:
+        if post is None:
+            self._post = make_post(
+                post_id=1,
+                body_text="Default body text for unit testing. This is some sample text.",
+                title="Test Post Title",
+                summary=None,
+            )
+        elif isinstance(post, dict):
+            # Convert dict to Post, using dict keys as kwargs
+            # Handle updated_at string conversion if needed
+            post_kwargs = dict(post)
+            if "updated_at" in post_kwargs and isinstance(post_kwargs["updated_at"], str):
+                post_kwargs["updated_at"] = datetime.fromisoformat(post_kwargs["updated_at"].replace('Z', '+00:00'))
+            self._post = make_post(**post_kwargs)
+        else:
+            # Already a Post object
+            self._post = post
+
+    async def fetch(self, post_id: int, table_name: str) -> Post:
+        return self._post
+
+
+class FakeChunkStore:
+    """Records ensure_table and bulk_insert calls; stores chunks in-memory."""
+
+    def __init__(self) -> None:
+        self.ensure_table_calls: list[tuple[str, int]] = []  # (table_name, vector_dim)
+        self.inserted_chunks: list[Chunk] = []
+
+    async def ensure_table(self, table_name: str, vector_dim: int) -> None:
+        self.ensure_table_calls.append((table_name, vector_dim))
+
+    async def bulk_insert(self, chunks: list[Chunk], table_name: str) -> None:
+        self.inserted_chunks.extend(chunks)
+
+
+class FakeChunkVersionChecker:
+    """Returns a pre-configured {text_hash: chunk_id} dict for idempotency checks."""
+
+    def __init__(self, existing_hashes: dict[str, str] | None = None) -> None:
+        self._hashes = existing_hashes or {}
+
+    async def get_text_hashes(self, post_id: int, table_name: str) -> dict[str, str]:
+        return self._hashes

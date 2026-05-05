@@ -1,14 +1,15 @@
-"""E2E tests for the HTTP API.
+"""E2E tests for the sync API endpoint.
 
-Makes real HTTP calls to the FastAPI app backed by live Postgres and
-RabbitMQ containers (via testcontainers).  Exercises the full ingest path:
+Makes real HTTP calls to the API server running in the Docker Compose stack.
+Verifies the first step of the pipeline from the outside:
 
-    POST /posts/sync → DB upsert → post.synced event published to event log
+    POST /posts/sync → 200 response + correct status per post
 
-Marked @pytest.mark.e2e so they are excluded from the default run:
-    pytest              # unit tests only
-    pytest -m e2e       # these tests (requires Docker)
-    pytest -m "not e2e" # unit + integration
+Requires the full stack to be up:
+    docker compose up -d
+    pytest tests/e2e/ -m e2e
+
+Marked @pytest.mark.e2e so they are excluded from the default run.
 """
 from __future__ import annotations
 
@@ -56,11 +57,14 @@ async def test_health_endpoint_returns_ok(async_client: AsyncClient):
 @pytest.mark.asyncio
 async def test_sync_new_post_returns_inserted(async_client: AsyncClient):
     """First ingest of a post must be persisted and reported as 'inserted'."""
-    response = await async_client.post("/posts/sync", json=_sync_payload(1001))
+    json_payload = _sync_payload(1001)
+    response = await async_client.post("/posts/sync", json=json_payload)
 
     assert response.status_code == 200
-    result = response.json()["results"][0]
-    assert result["status"] == "inserted"
+    results = response.json()["results"]
+    assert len(results) == 1, f"Expected 1 result, got {len(results)}"
+    result = results[0]
+    assert result["status"] == "inserted", f"Expected status 'inserted', {result!r}"
     assert result["success"] is True
     assert result["post_id"] == 1001
 
@@ -73,7 +77,7 @@ async def test_sync_duplicate_post_returns_skipped(async_client: AsyncClient):
     response = await async_client.post("/posts/sync", json=payload)  # duplicate
 
     result = response.json()["results"][0]
-    assert result["status"] == "skipped"
+    assert result["status"] == "skipped", f"Expected status 'skipped', {result!r}"
     assert result["success"] is True
 
 
@@ -87,7 +91,7 @@ async def test_sync_post_with_newer_timestamp_returns_updated(async_client: Asyn
     response = await async_client.post("/posts/sync", json=_sync_payload(1003, updated_at=newer_time))
 
     result = response.json()["results"][0]
-    assert result["status"] == "updated"
+    assert result["status"] == "updated", f"Expected status 'updated', {result!r}"
     assert result["success"] is True
 
 

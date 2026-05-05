@@ -1,6 +1,8 @@
-"""Postgres health checks: connectivity, pgvector extension, basic DDL/DML.
+"""Postgres health checks for the Docker Compose stack.
 
-Simple smoke test that runs first, fails fast if infrastructure is broken.
+Pre-flight smoke tests: connectivity, pgvector extension, basic DDL/DML.
+Run these first — if they fail, the rest of the E2E suite will also fail
+and the problem is infrastructure, not application code.
 """
 import pytest
 import asyncpg

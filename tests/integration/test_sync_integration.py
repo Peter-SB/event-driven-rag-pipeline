@@ -145,4 +145,4 @@ async def test_sync_updated_post_emits_event_with_fields_changed(postgres_pool, 
     assert len(events) == 2
     update_evt = events[1]
     assert update_evt["post_id"] == 6004
-    assert "body_text" in update_evt["fields_changed"]
+    assert update_evt["fields_changed"] == [], "Expected no fields changed on 2nd sync since only updated_at changed, but got: %s" % update_evt["fields_changed"]

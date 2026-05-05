@@ -19,6 +19,7 @@ from datetime import datetime, UTC, timedelta
 
 import pytest
 
+from event_driven_rag_service.data_models.post import Post
 from tests.utils.factories import make_post
 
 
@@ -127,7 +128,7 @@ async def test_fetch_returns_dict_with_all_columns(clean_posts_table):
     await clean_posts_table.upsert(post)
 
     row = await clean_posts_table.fetch(106)
-    assert isinstance(row, dict)
+    assert isinstance(row, Post)
     # Spot-check a few important fields
     assert "post_id" in row
     assert "external_id" in row
@@ -147,3 +148,139 @@ async def test_multiple_different_posts_stored_independently(clean_posts_table):
         row = await clean_posts_table.fetch(i)
         assert row is not None
         assert row["post_id"] == i
+
+
+# ---------------------------------------------------------------------------
+# Library ID table creation (ensure tables exist for different libraries)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_ensure_table_creates_table_with_library_id_name(postgres_pool):
+    """Calling ensure_table with a library ID table name creates the table."""
+    from event_driven_rag_service.repository.post_repository import PostRepository
+
+    repo = PostRepository(postgres_pool)
+    table_name = "posts_main"
+
+    # Create the table
+    await repo.ensure_table(table_name)
+
+    # Verify the table exists by inserting a post
+    post = make_post(post_id=200)
+    status, _ = await repo.upsert(post, table_name)
+    assert status == "inserted"
+
+    # Verify we can fetch it back
+    row = await repo.fetch(200, table_name)
+    assert row is not None
+    assert row["post_id"] == 200
+
+    # Cleanup
+    async with postgres_pool.acquire() as conn:
+        await conn.execute(f"DROP TABLE IF EXISTS {table_name}")
+
+
+@pytest.mark.asyncio
+async def test_ensure_table_creates_different_library_tables(postgres_pool):
+    """ensure_table creates separate tables for different library_id values."""
+    from event_driven_rag_service.repository.post_repository import PostRepository
+
+    repo = PostRepository(postgres_pool)
+
+    # Create tables for two different libraries
+    await repo.ensure_table("posts_main")
+    await repo.ensure_table("posts_work")
+
+    # Insert posts into each table
+    post_main = make_post(post_id=301)
+    post_work = make_post(post_id=302)
+
+    await repo.upsert(post_main, "posts_main")
+    await repo.upsert(post_work, "posts_work")
+
+    # Verify isolation: post_main is only in posts_main, not posts_work
+    row_in_main = await repo.fetch(301, "posts_main")
+    row_in_work = await repo.fetch(301, "posts_work")
+
+    assert row_in_main is not None
+    assert row_in_work is None
+
+    # Verify post_work is only in posts_work
+    row_in_work = await repo.fetch(302, "posts_work")
+    row_in_main = await repo.fetch(302, "posts_main")
+
+    assert row_in_work is not None
+    assert row_in_main is None
+
+    # Cleanup
+    async with postgres_pool.acquire() as conn:
+        await conn.execute("DROP TABLE IF EXISTS posts_main")
+        await conn.execute("DROP TABLE IF EXISTS posts_work")
+
+
+@pytest.mark.asyncio
+async def test_ensure_table_multiple_calls_same_table(postgres_pool):
+    """Calling ensure_table multiple times for the same library table is safe."""
+    from event_driven_rag_service.repository.post_repository import PostRepository
+
+    repo = PostRepository(postgres_pool)
+    table_name = "posts_science"
+
+    # Call ensure_table three times for the same table
+    await repo.ensure_table(table_name)
+    await repo.ensure_table(table_name)
+    await repo.ensure_table(table_name)
+
+    # Insert a post to verify table works
+    post = make_post(post_id=400)
+    status, _ = await repo.upsert(post, table_name)
+    assert status == "inserted"
+
+    # Cleanup
+    async with postgres_pool.acquire() as conn:
+        await conn.execute(f"DROP TABLE IF EXISTS {table_name}")
+
+
+@pytest.mark.asyncio
+async def test_ensure_table_creates_with_proper_schema(postgres_pool):
+    """ensure_table creates table with all required columns and indexes."""
+    from event_driven_rag_service.repository.post_repository import PostRepository
+
+    repo = PostRepository(postgres_pool)
+    table_name = "posts_verify_schema"
+
+    await repo.ensure_table(table_name)
+
+    # Query the table schema
+    async with postgres_pool.acquire() as conn:
+        # Get all columns
+        columns = await conn.fetch(
+            """SELECT column_name, data_type FROM information_schema.columns
+               WHERE table_name = $1 ORDER BY ordinal_position""",
+            table_name
+        )
+
+        # Verify key columns exist
+        column_names = [col["column_name"] for col in columns]
+        assert "post_id" in column_names
+        assert "external_id" in column_names
+        assert "external_source" in column_names
+        assert "title" in column_names
+        assert "body_text" in column_names
+        assert "author" in column_names
+        assert "updated_at" in column_names
+
+        # Get indexes
+        indexes = await conn.fetch(
+            """SELECT indexname FROM pg_indexes
+               WHERE tablename = $1""",
+            table_name
+        )
+
+        index_names = [idx["indexname"] for idx in indexes]
+        # Should have primary key index and updated_at index
+        assert any("updated_at_idx" in name for name in index_names)
+
+    # Cleanup
+    async with postgres_pool.acquire() as conn:
+        await conn.execute(f"DROP TABLE IF EXISTS {table_name}")

@@ -17,37 +17,7 @@ from event_driven_rag_service.data_models.post import Post
 logger = logging.getLogger(__name__)
 
 
-_CREATE_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS {table} (
-    post_id              INTEGER      PRIMARY KEY,
-    external_id          TEXT         NOT NULL,
-    external_source      TEXT         NOT NULL DEFAULT 'reddit',
-    external_created_at  TIMESTAMPTZ  NOT NULL,
-    url                  TEXT         NOT NULL,
-    title                TEXT         NOT NULL,
-    body_text            TEXT,
-    author               TEXT         NOT NULL,
-    subreddit            TEXT,
-    added_at             TIMESTAMPTZ  NOT NULL,
-    updated_at           TIMESTAMPTZ  NOT NULL,
-    custom_title         TEXT,
-    custom_body          TEXT,
-    notes                TEXT,
-    rating               DOUBLE PRECISION,
-    is_read              BOOLEAN      NOT NULL DEFAULT FALSE,
-    read_at              TIMESTAMPTZ,
-    is_favorite          BOOLEAN      NOT NULL DEFAULT FALSE,
-    is_archived          BOOLEAN      NOT NULL DEFAULT FALSE,
-    queued_at            TIMESTAMPTZ,
-    is_deleted           BOOLEAN      NOT NULL DEFAULT FALSE,
-    folder_ids           INTEGER[]    NOT NULL DEFAULT ARRAY[]::INTEGER[],
-    extra_fields         JSONB,
-    body_min_hash        TEXT,
-    summary              TEXT,
-    embedded_at          TIMESTAMPTZ
-);
-CREATE INDEX IF NOT EXISTS {table}_updated_at_idx ON {table} (updated_at);
-"""
+
 
 _UPSERT_SQL = """
 INSERT INTO {table} (
@@ -117,12 +87,48 @@ class PostRepository:
                         Falls back to the bound table_name if not provided.
         """
         table_name = (table_name or self._table_name).lower()
-        sql = _CREATE_TABLE_SQL.format(table=table_name)
+        
+        # Create table
+        create_table_sql = f"""
+        CREATE TABLE IF NOT EXISTS {table_name} (
+            post_id              INTEGER      PRIMARY KEY,
+            external_id          TEXT         NOT NULL,
+            external_source      TEXT         NOT NULL DEFAULT 'reddit',
+            external_created_at  TIMESTAMPTZ  NOT NULL,
+            url                  TEXT         NOT NULL,
+            title                TEXT         NOT NULL,
+            body_text            TEXT,
+            author               TEXT         NOT NULL,
+            subreddit            TEXT,
+            added_at             TIMESTAMPTZ  NOT NULL,
+            updated_at           TIMESTAMPTZ  NOT NULL,
+            custom_title         TEXT,
+            custom_body          TEXT,
+            notes                TEXT,
+            rating               DOUBLE PRECISION,
+            is_read              BOOLEAN      NOT NULL DEFAULT FALSE,
+            read_at              TIMESTAMPTZ,
+            is_favorite          BOOLEAN      NOT NULL DEFAULT FALSE,
+            is_archived          BOOLEAN      NOT NULL DEFAULT FALSE,
+            queued_at            TIMESTAMPTZ,
+            is_deleted           BOOLEAN      NOT NULL DEFAULT FALSE,
+            folder_ids           INTEGER[]    NOT NULL DEFAULT ARRAY[]::INTEGER[],
+            extra_fields         JSONB,
+            body_min_hash        TEXT,
+            summary              TEXT,
+            embedded_at          TIMESTAMPTZ
+        )
+        """
+        
+        # Create index
+        index_sql = f"CREATE INDEX IF NOT EXISTS {table_name}_updated_at_idx ON {table_name} (updated_at)"
+        
         async with self._pool.acquire() as conn:
-            await conn.execute(sql)
+            await conn.execute(create_table_sql)
+            await conn.execute(index_sql)
 
-    async def fetch(self, post_id: int, table_name: Optional[str] = None) -> Optional[dict[str, Any]]:
-        """Return a single post row as a plain dict, or None if not found.
+    async def fetch(self, post_id: int, table_name: Optional[str] = None) -> Optional[Post]:
+        """Return a single post object, or None if not found.
 
         Args:
             post_id: The post ID to fetch.
@@ -135,7 +141,7 @@ class PostRepository:
                 f"SELECT * FROM {table_name} WHERE post_id = $1",
                 post_id,
             )
-        return dict(row) if row else None
+        return Post(**dict(row)) if row else None
 
     async def upsert(self, post: Post, table_name: Optional[str] = None) -> Tuple[str, Optional[datetime]]:
         """Insert or update a post using updated_at as the freshness signal.

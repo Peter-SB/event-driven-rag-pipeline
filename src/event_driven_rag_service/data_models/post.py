@@ -47,6 +47,7 @@ class Post(BaseModel):
     extra_fields: Optional[Union[dict, str]] = Field(None, alias="extraFields")
     body_min_hash: Optional[str] = Field(None, alias="bodyMinHash")
     summary: Optional[str] = None
+    analysis_text: Optional[str] = Field(None, alias="analysisText")
     embedded_at: Optional[datetime] = Field(None, alias="embeddedAt")
 
     model_config = ConfigDict(populate_by_name=True)
@@ -61,3 +62,34 @@ class Post(BaseModel):
             except json.JSONDecodeError:
                 pass
         return v
+    
+    def __getitem__(self, key: str):
+        """
+        Allow `post['title']` etc.
+        Supports both Python field names and alias names.
+        Raises KeyError if not found (consistent with dict behaviour).
+        """
+        # Try field name first, then alias
+        try:
+            return getattr(self, key)
+        except AttributeError:
+            # Convert alias to field name if possible
+            for field_name, field_info in self.model_fields.items():
+                if field_info.alias == key:
+                    return getattr(self, field_name)
+            raise KeyError(key)
+
+    def __contains__(self, key: str) -> bool:
+        """Allow `'title' in post`."""
+        try:
+            self[key]
+            return True
+        except KeyError:
+            return False
+
+    def get(self, key: str, default=None):
+        """dict-like .get() method."""
+        try:
+            return self[key]
+        except KeyError:
+            return default

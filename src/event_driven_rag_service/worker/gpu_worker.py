@@ -105,7 +105,11 @@ class GpuEmbedWorker(BaseWorker):
     def _open_channel(self):
         channel = super()._open_channel()
         for _, queue_name in self._model_queues:
-            channel.queue_declare(queue=queue_name, durable=True)
+            # Use passive=True: assert the queue exists without redeclaring it.
+            # The full topology (including DLX args) is declared by setup_topology
+            # in the API at startup. Redeclaring here with different args causes
+            # PRECONDITION_FAILED from RabbitMQ.
+            channel.queue_declare(queue=queue_name, passive=True)
         return channel
 
     # ------------------------------------------------------------------
