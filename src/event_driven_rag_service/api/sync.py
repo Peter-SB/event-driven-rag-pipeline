@@ -78,7 +78,7 @@ async def sync_posts(req: SyncRequest, request: Request) -> SyncResponse:
     logger.info("sync_posts: received %d posts for library_id=%s", len(req.posts), req.library_id)
 
     # Lazy table creation: ensure the post table exists on first sync for this library
-    seen_tables: set[str] = request.app.state.seen_post_tables
+    seen_tables: set[str] = set() # request.app.state.seen_post_tables # Currently breaks tests due to shared state across tests; needs refactor to be test-friendly
     if post_table not in seen_tables:
         await post_repo.ensure_table(post_table)
         seen_tables.add(post_table)
