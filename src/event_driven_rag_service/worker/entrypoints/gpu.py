@@ -22,6 +22,7 @@ from event_driven_rag_service.config.settings import settings
 from event_driven_rag_service.config.embedding_config import EMBED_CONFIGS
 from event_driven_rag_service.infrastructure.event_bus import create_event_bus, PostgresEventBus
 from event_driven_rag_service.repository.chunk_repository import ChunkRepository
+from event_driven_rag_service.repository.search_job_repository import SearchJobRepository
 from event_driven_rag_service.worker.gpu_worker import GpuEmbedWorker
 from event_driven_rag_service.handlers.embed_handler import EmbedHandler
 
@@ -96,6 +97,28 @@ class _MockEmbeddingModel:
 # Setup / teardown
 # ---------------------------------------------------------------------------
 
+class _CompositeEmbeddingStore:
+    """Routes chunk rows to ChunkRepository and query rows to SearchJobRepository.
+
+    EmbedHandler calls save_batch with either ChunkEmbeddingRow (has chunk_id)
+    or QueryEmbeddingRow (has query_job_id).  This store dispatches each to the
+    correct repository so chunk vectors land in chunk tables and query vectors
+    land in search_jobs.
+    """
+
+    def __init__(self, chunk_repo: ChunkRepository, job_repo: SearchJobRepository) -> None:
+        self._chunks = chunk_repo
+        self._jobs = job_repo
+
+    async def save_batch(self, rows: list) -> None:
+        chunk_rows = [r for r in rows if "chunk_id" in r]
+        query_rows = [r for r in rows if "query_job_id" in r]
+        if chunk_rows:
+            await self._chunks.save_batch(chunk_rows)
+        for row in query_rows:
+            await self._jobs.store_embedding(row["query_job_id"], row["embedding"])
+
+
 async def _setup():
     pool: asyncpg.Pool = await asyncpg.create_pool(
         settings.db_url,
@@ -109,11 +132,13 @@ async def _setup():
         await event_bus.setup_tables()
     logger.info("Event bus ready (type=%s)", event_bus.__class__.__name__)
 
-    # Chunk tables are created lazily by CpuChunkWorker / ChunkPostHandler
-    # when the first chunk task arrives. This allows per-library table isolation.
     chunk_repo = ChunkRepository(pool)
-    logger.info("ChunkRepository ready (lazy table creation)")
-    return pool, event_bus, chunk_repo
+    job_repo = SearchJobRepository(pool)
+    await job_repo.ensure_table()
+    logger.info("Repositories ready (lazy chunk table creation)")
+
+    embedding_store = _CompositeEmbeddingStore(chunk_repo, job_repo)
+    return pool, event_bus, embedding_store
 
 
 def main() -> None:
@@ -122,7 +147,7 @@ def main() -> None:
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
-    pool, event_bus, chunk_repo = loop.run_until_complete(_setup())
+    pool, event_bus, embedding_store = loop.run_until_complete(_setup())
 
     # Priority-ordered model queues: index 0 = highest priority.
     # Query embeddings (search latency-sensitive) before bulk chunk embeddings.
@@ -138,9 +163,13 @@ def main() -> None:
             seen.add(pair[1])
             unique_queues.append(pair)
 
+    # chunk_fetcher still uses ChunkRepository directly (reads chunk texts)
+    from event_driven_rag_service.repository.chunk_repository import ChunkRepository as _CR
+    chunk_repo_for_fetch = _CR(pool)
+
     embed_handler = EmbedHandler(
-        chunk_fetcher=chunk_repo,
-        embedding_store=chunk_repo,
+        chunk_fetcher=chunk_repo_for_fetch,
+        embedding_store=embedding_store,
         event_log=event_bus,
     )
 

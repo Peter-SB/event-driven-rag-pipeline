@@ -217,6 +217,13 @@ class GpuEmbedWorker(BaseWorker):
         ok: list[WorkerMessage] = []
         failed: list[WorkerMessage] = []
 
+        # Query tasks first — search latency is sensitive; chunk batches can wait.
+        for msg in query_msgs:
+            success = self._loop.run_until_complete(
+                self._handler.embed_query(msg.task, model_name, self._model)
+            )
+            (ok if success else failed).append(msg)
+
         if chunk_msgs:
             chunk_tasks = [m.task for m in chunk_msgs]
             task_to_msg = {id(t): m for t, m in zip(chunk_tasks, chunk_msgs)}
@@ -225,12 +232,6 @@ class GpuEmbedWorker(BaseWorker):
             )
             ok.extend(task_to_msg[id(t)] for t in ok_tasks if id(t) in task_to_msg)
             failed.extend(task_to_msg[id(t)] for t in fail_tasks if id(t) in task_to_msg)
-
-        for msg in query_msgs:
-            success = self._loop.run_until_complete(
-                self._handler.embed_query(msg.task, model_name, self._model)
-            )
-            (ok if success else failed).append(msg)
 
         return ok, failed
 

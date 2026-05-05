@@ -451,3 +451,117 @@ async def test_handle_summary_title_publishes_correct_event():
     events = bus.peek_topic("chunks.created")
     assert len(events) == 1
     assert events[0]["task_type"] == "summary_title"
+
+
+# ---------------------------------------------------------------------------
+# Handler tests for title chunking
+# ---------------------------------------------------------------------------
+
+def test_resolve_text_returns_title_for_title_task_type():
+    """_resolve_text should return title for task_type='title'."""
+    task = ChunkTask(task_type="title", post_id=1, post_table="posts_main", embed_model="bge-small-en-v1.5")
+    post = make_post(title="My Title")
+    result = ChunkPostHandler._resolve_text(task, post)
+    assert result == "My Title"
+
+
+def test_resolve_text_prefers_custom_title_over_title():
+    """_resolve_text should prefer custom_title when present."""
+    task = ChunkTask(task_type="title", post_id=1, post_table="posts_main", embed_model="bge-small-en-v1.5")
+    post = make_post(title="Original Title", custom_title="Custom Title")
+    result = ChunkPostHandler._resolve_text(task, post)
+    assert result == "Custom Title"
+
+
+def test_split_text_at_index_strategy_selected_for_title():
+    """_select_strategy should return SplitTextAtIndexStrategy for title."""
+    strategy = _select_strategy("title")
+    assert isinstance(strategy, SplitTextAtIndexStrategy)
+
+
+@pytest.mark.asyncio
+async def test_handle_title_produces_single_chunk():
+    """Handler with title task type should produce a single chunk for typical title text."""
+    post = {
+        "body_text": "ignored",
+        "title": "Understanding AI",
+        "updated_at": "2024-01-01T00:00:00+00:00",
+    }
+    task = ChunkTask(task_type="title", post_id=60, post_table="posts_main", embed_model="bge-small-en-v1.5")
+    handler, store, _ = _make_handler(post)
+
+    chunk_ids = await handler.handle(task)
+
+    assert len(store.inserted_chunks) == 1, "title should produce exactly one chunk"
+    assert chunk_ids == [store.inserted_chunks[0].id]
+
+
+@pytest.mark.asyncio
+async def test_handle_title_publishes_correct_event():
+    """Handler should publish chunks.created event with title task_type."""
+    post = {
+        "body_text": "ignored",
+        "title": "Title",
+        "updated_at": "2024-01-01T00:00:00+00:00",
+    }
+    task = ChunkTask(task_type="title", post_id=61, post_table="posts_main", embed_model="bge-small-en-v1.5")
+    handler, _, bus = _make_handler(post)
+
+    await handler.handle(task)
+
+    events = bus.peek_topic("chunks.created")
+    assert len(events) == 1
+    assert events[0]["task_type"] == "title"
+
+
+@pytest.mark.asyncio
+async def test_ensure_table_called_with_correct_vector_dim_for_title():
+    """ensure_table should be called with dim=384 for title task (bge-small-en-v1.5)."""
+    post = {"title": "Test Title", "body_text": "ignored", "updated_at": "2024-01-01T00:00:00+00:00"}
+    task = ChunkTask(task_type="title", post_id=1, post_table="posts_main", embed_model="bge-small-en-v1.5")
+    handler, store, _ = _make_handler(post)
+
+    await handler.handle(task)
+
+    assert len(store.ensure_table_calls) == 1
+    table_name, vector_dim = store.ensure_table_calls[0]
+    assert table_name == "posts_main_chunks_title_bge_small_en_v1_5"
+    assert vector_dim == 384, "bge-small-en-v1.5 should have dim=384"
+
+
+@pytest.mark.asyncio
+async def test_handle_title_with_custom_title():
+    """Handler should use custom_title when present."""
+    post = {
+        "body_text": "ignored",
+        "title": "Original Title",
+        "custom_title": "Custom Title",
+        "updated_at": "2024-01-01T00:00:00+00:00",
+    }
+    task = ChunkTask(task_type="title", post_id=62, post_table="posts_main", embed_model="bge-small-en-v1.5")
+    handler, store, _ = _make_handler(post)
+
+    await handler.handle(task)
+
+    assert len(store.inserted_chunks) == 1
+    chunk_text = store.inserted_chunks[0].text
+    assert chunk_text == "Custom Title"
+
+
+@pytest.mark.asyncio
+async def test_handle_skips_title_when_title_missing():
+    """Handler should skip when title is missing."""
+    post = {
+        "body_text": "ignored",
+        "title": None,
+        "custom_title": None,
+        "updated_at": "2024-01-01T00:00:00+00:00",
+    }
+    task = ChunkTask(task_type="title", post_id=63, post_table="posts_main", embed_model="bge-small-en-v1.5")
+    handler, store, bus = _make_handler(post)
+
+    chunk_ids = await handler.handle(task)
+
+    assert len(chunk_ids) == 0
+    assert len(store.inserted_chunks) == 0
+    assert len(bus.peek_topic("chunks.created")) == 0

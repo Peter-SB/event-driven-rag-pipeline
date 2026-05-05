@@ -260,7 +260,7 @@ class SplitTextAtIndexStrategy(ChunkStrategy):
     Used for text that should be kept intact unless a hard fail-safe limit is hit.
     """
 
-    max_chars: int = 4_096  # ~1024 tokens at 4 chars/token
+    max_chars: int = 4_096 * 4  # ~1024 tokens at 4 chars/token * 4
 
     def chunk(self, text: str) -> list[str]:
         """Split text into chunks, each at most max_chars.

@@ -22,7 +22,7 @@ from event_driven_rag_service.utils.chunk_strategies import chunk_at_boundaries
 
 class ChunkTask(BaseTask):
     kind: Literal["chunk"] = "chunk"
-    task_type: Literal["body", "summary_title", "analysis"]
+    task_type: Literal["body", "summary_title", "title", "analysis"]
     post_id: int
     post_table: str
 

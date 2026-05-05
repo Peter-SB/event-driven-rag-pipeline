@@ -21,6 +21,7 @@ Cleanup: async_client runs a pre-test cleanup so the suite is repeatable
 """
 from __future__ import annotations
 
+import asyncio
 import os
 
 import aio_pika
@@ -62,6 +63,30 @@ async def rmq_connection_e2e():
 # HTTP client
 # ---------------------------------------------------------------------------
 
+_EMBED_QUEUES = [
+    "cpu.chunk.post",
+    "gpu.embed.bge-base-v1.5",
+    "gpu.embed.bge-small-en-v1.5",
+    "gpu.embed.qwen3-0.6b",
+    "cpu.search.run",
+]
+
+
+async def _purge_queues(rmq_url: str) -> None:
+    """Purge all work queues so stale tasks from previous tests don't run."""
+    conn = await aio_pika.connect_robust(rmq_url)
+    try:
+        async with conn.channel() as ch:
+            for q in _EMBED_QUEUES:
+                try:
+                    queue = await ch.declare_queue(q, passive=True)
+                    await queue.purge()
+                except Exception:
+                    pass  # Queue may not exist yet on first run
+    finally:
+        await conn.close()
+
+
 @pytest_asyncio.fixture
 async def async_client(postgres_pool_e2e: asyncpg.Pool):
     """httpx AsyncClient pointed at the running API service.
@@ -69,21 +94,30 @@ async def async_client(postgres_pool_e2e: asyncpg.Pool):
     Makes real HTTP requests (not ASGI transport) so requests exercise the
     full network stack, real workers, and the lifespan startup sequence.
 
-    Runs a pre-test cleanup of e2e tables so the suite is repeatable without
-    restarting the Docker Compose stack between runs.
+    Runs a pre-test cleanup of e2e tables and RabbitMQ queues so the suite
+    is repeatable without restarting the Docker Compose stack between runs.
     """
+    # Purge RabbitMQ queues FIRST so workers don't process stale tasks
+    # that reference tables about to be dropped.
+    await _purge_queues(_RABBITMQ_URL)
+
     async with postgres_pool_e2e.acquire() as conn:
+        await conn.execute("DELETE FROM consumer_offsets")
+        await conn.execute("DELETE FROM event_log")
         await conn.execute("DROP TABLE IF EXISTS posts_e2e")
         await conn.execute("DROP TABLE IF EXISTS posts_e2e_chunks_body_bge_base_v1_5")
-        await conn.execute("DELETE FROM event_log")
-        await conn.execute("DELETE FROM consumer_offsets")
+        await conn.execute("DROP TABLE IF EXISTS posts_e2e_chunks_title_bge_small_en_v1_5")
+        await conn.execute("DROP TABLE IF EXISTS posts_e2e_chunks_summary_title_bge_small_en_v1_5")
 
     async with httpx.AsyncClient(base_url=_API_BASE, timeout=30.0) as client:
         yield client
-        
-    # Clean up test tables so the next test starts from a blank state
+
+    # Post-test cleanup: purge queues first, then drop DB state
+    await _purge_queues(_RABBITMQ_URL)
     async with postgres_pool_e2e.acquire() as conn:
         await conn.execute("DROP TABLE IF EXISTS posts_e2e")
         await conn.execute("DROP TABLE IF EXISTS posts_e2e_chunks_body_bge_base_v1_5")
+        await conn.execute("DROP TABLE IF EXISTS posts_e2e_chunks_title_bge_small_en_v1_5")
+        await conn.execute("DROP TABLE IF EXISTS posts_e2e_chunks_summary_title_bge_small_en_v1_5")
         await conn.execute("DELETE FROM event_log")
         await conn.execute("DELETE FROM consumer_offsets")

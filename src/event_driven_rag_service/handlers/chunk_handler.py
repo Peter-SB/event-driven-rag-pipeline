@@ -83,24 +83,24 @@ def _split_text_fallback(
     return [text[i: i + target] for i in range(0, len(text), target - overlap)]
 
 
-_default_strategy = ChunkAtBoundaryStrategy(
+_boundary_strategy = ChunkAtBoundaryStrategy(
     target=CHUNK_CONFIG.target_words,
     overlap=CHUNK_CONFIG.chunk_overlap,
 )
 
-_summary_strategy = SplitTextAtIndexStrategy(max_chars=4_096)
+_default_strategy = SplitTextAtIndexStrategy(max_chars=4_096)
 
 
 def _select_strategy(task_type: str):
     """Select the appropriate chunking strategy based on task_type."""
-    if task_type == "summary_title":
-        return _summary_strategy
-    return _default_strategy
+    if task_type in ("summary_title", "title"):
+        return _default_strategy
+    return _boundary_strategy
 
 
 def _chunk_text(text: str, strategy: ChunkStrategy | None = None) -> list[str]:
     """Split text using the specified strategy; fall back to char-based if needed."""
-    strategy = strategy or _default_strategy
+    strategy = strategy or _boundary_strategy
     windows = strategy.chunk(text)
     if not windows:
         windows = _split_text_fallback(text)
@@ -275,6 +275,9 @@ class ChunkPostHandler:
         """Return the correct text for this task_type."""
         if task.task_type == "body":
             return getattr(post, "custom_body") or getattr(post, "body_text")
+
+        if task.task_type == "title":
+            return getattr(post, "custom_title") or getattr(post, "title")
 
         if task.task_type == "summary_title":
             title   = (getattr(post, "title") or "").strip()

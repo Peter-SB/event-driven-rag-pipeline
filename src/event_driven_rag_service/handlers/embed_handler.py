@@ -113,15 +113,25 @@ class EmbedHandler:
         """
         # Flatten to (task, chunk_id, text) triples across all tasks.
         triples: list[tuple[EmbedTask, str, str]] = []
+        fetch_failed: list[EmbedTask] = []
         for task in tasks:
             if not task.chunk_ids or not task.chunk_table:
                 continue
-            pairs = await self._chunks.fetch_texts(task.chunk_ids, task.chunk_table)
+            try:
+                pairs = await self._chunks.fetch_texts(task.chunk_ids, task.chunk_table)
+            except Exception:
+                logger.exception(
+                    "EmbedHandler: fetch_texts failed (chunk_table=%s, task_id=%s) — failing task",
+                    task.chunk_table,
+                    task.task_id,
+                )
+                fetch_failed.append(task)
+                continue
             for chunk_id, text in pairs:
                 triples.append((task, chunk_id, text))
 
         if not triples:
-            return tasks, []
+            return [t for t in tasks if t not in fetch_failed], fetch_failed
 
         texts = [t[2] for t in triples]
         try:
@@ -130,15 +140,24 @@ class EmbedHandler:
             logger.exception("EmbedHandler: encode() failed — failing entire batch")
             return [], tasks
 
-        rows: list[EmbeddingRow] = [
-            ChunkEmbeddingRow(
-                chunk_id=triples[i][1],
-                model_name=model_name,
-                embedding=vectors[i],
-                chunk_table=triples[i][0].chunk_table or "",
-            )
-            for i in range(len(triples))
-        ]
+        rows: list[EmbeddingRow] = []
+        for i in range(len(triples)):
+            task = triples[i][0]
+            if task.chunk_table:
+                rows.append(
+                    ChunkEmbeddingRow(
+                        chunk_id=triples[i][1],
+                        model_name=model_name,
+                        embedding=vectors[i],
+                        chunk_table=task.chunk_table,
+                    )
+                )
+            else:
+                logger.warning(
+                    "EmbedHandler: skipping chunk embedding without chunk_table (chunk_id=%s, post_id=%s)",
+                    triples[i][1],
+                    task.post_id,
+                )
         await self._embeddings.save_batch(rows)
 
         # Emit one embedding.completed per (post_id, chunk_table) group.
@@ -167,7 +186,7 @@ class EmbedHandler:
 
         # Deduplicate: one task may have contributed multiple chunk_ids.
         seen: dict[int, EmbedTask] = {id(t[0]): t[0] for t in triples}
-        return list(seen.values()), []
+        return list(seen.values()), fetch_failed
 
     async def embed_query(
         self,

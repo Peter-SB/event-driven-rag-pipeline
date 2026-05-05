@@ -5,7 +5,7 @@ ChunkTask messages to the RabbitMQ ingestion exchange.
 
 MVP scope
 ---------
-Only body and summary_title chunking are dispatched here.
+Body, title, and summary_title chunking are dispatched here.
 Inference / categorisation tasks are intentionally excluded until
 the inference pipeline is built.
 """
@@ -28,6 +28,7 @@ class PostDispatcher:
 
     post.synced:
         - cpu.chunk.post (task_type=body)           — always (or when body changed)
+        - cpu.chunk.post (task_type=title)          — when title or custom_title changed
         - cpu.chunk.post (task_type=summary_title)  — when has_summary=True
 
     Single responsibility: translate post events into tasks. No work is done here.
@@ -69,6 +70,9 @@ class PostDispatcher:
         body_changed = not fields_changed or any(
             f in fields_changed for f in ("body_text", "custom_body")
         )
+        title_changed = not fields_changed or any(
+            f in fields_changed for f in ("title", "custom_title")
+        )
         summary_changed = has_summary and (
             not fields_changed or any(
                 f in fields_changed for f in ("summary", "title", "custom_title")
@@ -76,7 +80,9 @@ class PostDispatcher:
         )
 
         route = TASK_ROUTES["chunk"]
+        await self._route_tasks(exchange, event, post_id, post_table, body_changed, title_changed, summary_changed, route)
 
+    async def _route_tasks(self, exchange, event, post_id, post_table, body_changed, title_changed, summary_changed, route):
         if body_changed:
             task = ChunkTask(
                 task_type="body",
@@ -91,6 +97,21 @@ class PostDispatcher:
                 routing_key=route.routing_key,
             )
             logger.debug("PostDispatcher: dispatched body chunk task for post %d", post_id)
+
+        if title_changed:
+            task = ChunkTask(
+                task_type="title",
+                post_id=post_id,
+                post_table=post_table,
+                embed_model=EMBED_CONFIGS["title"].model,
+                source_event_id=event.get("event_id"),
+                trace_id=event.get("trace_id"),
+            )
+            await exchange.publish(
+                aio_pika.Message(task.model_dump_json().encode()),
+                routing_key=route.routing_key,
+            )
+            logger.debug("PostDispatcher: dispatched title chunk task for post %d", post_id)
 
         if summary_changed:
             task = ChunkTask(

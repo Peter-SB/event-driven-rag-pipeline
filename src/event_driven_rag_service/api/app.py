@@ -24,7 +24,9 @@ from event_driven_rag_service.config.settings import settings
 from event_driven_rag_service.infrastructure.event_bus import create_event_bus
 from event_driven_rag_service.infrastructure.task_queue import setup_topology
 from event_driven_rag_service.repository.post_repository import PostRepository
+from event_driven_rag_service.repository.search_job_repository import SearchJobRepository
 from event_driven_rag_service.api.sync import router as sync_router
+from event_driven_rag_service.api.search import router as search_router
 
 logger = logging.getLogger(__name__)
 
@@ -52,13 +54,16 @@ async def lifespan(app: FastAPI):
 
     # --- Repositories ----------------------------------------------------
     post_repo = PostRepository(pool)
+    search_job_repo = SearchJobRepository(pool)
+    await search_job_repo.ensure_table()
 
     # --- Inject into app state -------------------------------------------
     app.state.pool = pool
     app.state.rmq = rmq
     app.state.event_bus = event_bus
     app.state.post_repo = post_repo
-    app.state.seen_post_tables: set[str] = set()  # Track seen post tables for lazy creation
+    app.state.search_job_repo = search_job_repo
+    app.state.seen_post_tables: set[str] = set()
 
     logger.info("Startup complete")
     yield
@@ -77,6 +82,7 @@ app = FastAPI(
 )
 
 app.include_router(sync_router)
+app.include_router(search_router)
 
 
 @app.get("/health", tags=["ops"])

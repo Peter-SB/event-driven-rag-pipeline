@@ -94,10 +94,10 @@ async def test_full_pipeline_post_synced_to_chunks_created(clean_pipeline_tables
     # Setup event bus
     bus = await _setup_bus(postgres_pool)
 
-    # Setup RabbitMQ: declare exchange and queue
+    # Setup RabbitMQ: declare exchange and queue (exclusive, auto-delete to avoid test pollution)
     channel = await rmq_conn.channel()
     exchange = await channel.declare_exchange("ingestion", aio_pika.ExchangeType.TOPIC, durable=True)
-    queue = await channel.declare_queue("cpu.chunk.post", durable=True)
+    queue = await channel.declare_queue("cpu.chunk.post", exclusive=True, auto_delete=True)
     await queue.bind(exchange, routing_key="cpu.chunk.post")
 
     # Insert a post
@@ -345,10 +345,10 @@ async def test_consumer_offset_advances_after_dispatcher_runs(clean_pipeline_tab
 
     bus = await _setup_bus(postgres_pool)
 
-    # Setup RabbitMQ
+    # Setup RabbitMQ (exclusive, auto-delete to avoid test pollution)
     channel = await rmq_conn.channel()
     exchange = await channel.declare_exchange("ingestion", aio_pika.ExchangeType.TOPIC, durable=True)
-    queue = await channel.declare_queue("cpu.chunk.post", durable=True)
+    queue = await channel.declare_queue("cpu.chunk.post", exclusive=True, auto_delete=True)
     await queue.bind(exchange, routing_key="cpu.chunk.post")
 
     # Insert post and publish event

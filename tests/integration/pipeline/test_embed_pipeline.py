@@ -156,7 +156,7 @@ async def test_full_embed_pipeline_chunks_created_to_embedding_completed(clean_p
     embed_cfg = EMBED_CONFIGS["body"]
     exchange = await channel.declare_exchange("embedding", aio_pika.ExchangeType.TOPIC, durable=True)
     routing_key = f"gpu.embed.{embed_cfg.model}"
-    queue = await channel.declare_queue(routing_key, durable=True)
+    queue = await channel.declare_queue(routing_key, exclusive=True, auto_delete=True)
     await queue.bind(exchange, routing_key=routing_key)
 
     # Create real chunks and drain the chunks.created event so the bus has it
@@ -273,7 +273,7 @@ async def test_embed_task_fields_match_chunks_created_event(clean_pipeline_table
     embed_cfg = EMBED_CONFIGS["body"]
     exchange = await channel.declare_exchange("embedding", aio_pika.ExchangeType.TOPIC, durable=True)
     routing_key = f"gpu.embed.{embed_cfg.model}"
-    queue = await channel.declare_queue(routing_key, durable=True)
+    queue = await channel.declare_queue(routing_key, exclusive=True, auto_delete=True)
     await queue.bind(exchange, routing_key=routing_key)
 
     # Run dispatcher
@@ -421,7 +421,7 @@ async def test_consumer_offset_advances_after_chunk_dispatcher_runs(clean_pipeli
     embed_cfg = EMBED_CONFIGS["body"]
     exchange = await channel.declare_exchange("embedding", aio_pika.ExchangeType.TOPIC, durable=True)
     routing_key = f"gpu.embed.{embed_cfg.model}"
-    queue = await channel.declare_queue(routing_key, durable=True)
+    queue = await channel.declare_queue(routing_key, exclusive=True, auto_delete=True)
     await queue.bind(exchange, routing_key=routing_key)
 
     dispatcher = ChunkDispatcher(rmq_conn, bus)

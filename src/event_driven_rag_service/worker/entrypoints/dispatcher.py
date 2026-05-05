@@ -3,12 +3,14 @@
 Run with:
     python -m event_driven_rag_service.worker.entrypoints.dispatcher
 
-Combines PostDispatcher and ChunkDispatcher into a single process.
-Both dispatchers run concurrently in the same event loop, translating
+Combines all dispatchers into a single process.
+All dispatchers run concurrently in the same event loop, translating
 events from the event log into tasks queued to RabbitMQ.
 
-PostDispatcher:  post.synced → chunk tasks
-ChunkDispatcher: chunks.created → embed tasks
+PostDispatcher:       post.synced → chunk tasks
+ChunkDispatcher:      chunks.created → embed tasks (for chunks)
+SearchDispatcher:     search_job.created → embed tasks (for queries)
+EmbeddingDispatcher:  search_query.embedded → search execution tasks
 """
 from __future__ import annotations
 
@@ -21,6 +23,8 @@ import asyncpg
 from event_driven_rag_service.config.settings import settings
 from event_driven_rag_service.dispatchers.post_dispatcher import PostDispatcher
 from event_driven_rag_service.dispatchers.chunk_dispatcher import ChunkDispatcher
+from event_driven_rag_service.dispatchers.search_dispatcher import SearchDispatcher
+from event_driven_rag_service.dispatchers.embedding_dispatcher import EmbeddingDispatcher
 from event_driven_rag_service.infrastructure.event_bus import create_event_bus
 
 logger = logging.getLogger(__name__)
@@ -52,7 +56,7 @@ async def _setup():
 
 
 async def main() -> None:
-    """Run both dispatchers concurrently."""
+    """Main loop for running dispatchers concurrently. Must update if adding new dispatchers."""
     logger.info("Dispatcher services starting")
 
     pool, event_bus, rmq = await _setup()
@@ -60,12 +64,16 @@ async def main() -> None:
     try:
         post_dispatcher = PostDispatcher(rmq, event_bus)
         chunk_dispatcher = ChunkDispatcher(rmq, event_bus)
+        search_dispatcher = SearchDispatcher(rmq, event_bus)
+        embedding_dispatcher = EmbeddingDispatcher(rmq, event_bus)
 
-        logger.info("PostDispatcher and ChunkDispatcher instantiated")
+        logger.info("PostDispatcher, ChunkDispatcher, SearchDispatcher, and EmbeddingDispatcher instantiated")
 
         await asyncio.gather(
             post_dispatcher.run(),
             chunk_dispatcher.run(),
+            search_dispatcher.run(),
+            embedding_dispatcher.run(),
         )
     finally:
         await rmq.close()

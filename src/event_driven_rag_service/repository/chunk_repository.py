@@ -256,8 +256,13 @@ class ChunkRepository:
         for row in rows:
             if "chunk_id" in row:
                 table = row.get("chunk_table")
-                if table:
-                    by_table[table].append(row)
+                if not table:
+                    logger.warning(
+                        "ChunkRepository.save_batch: skipping row without chunk_table (chunk_id=%s)",
+                        row.get("chunk_id"),
+                    )
+                    continue
+                by_table[table].append(row)
         for table, table_rows in by_table.items():
             table = table.lower()
             params = [
@@ -269,6 +274,48 @@ class ChunkRepository:
                     f"UPDATE {table} SET embedding = $1::vector WHERE id = $2::uuid",
                     params,
                 )
+
+    async def search_nearest(
+        self,
+        table_name: str,
+        query_vector: list[float],
+        k: int,
+    ) -> list[dict[str, Any]]:
+        """Return the top-k chunks nearest to *query_vector* by cosine distance.
+
+        Uses pgvector's ``<=>`` cosine-distance operator.  Requires the HNSW
+        index to exist for performance; falls back to a sequential scan if not.
+
+        Returns a list of dicts with keys: id, post_id, text, metadata, score
+        where ``score`` is cosine similarity (higher = more similar, range [0, 1]).
+
+        #todo: check which similarity metric (cosine vs euclidean) works best in practice for our use case. and check embeddings are correctly normalized if using cosine similarity.
+        """
+        table_name = table_name.lower()
+        embedding_str = "[" + ",".join(str(float(x)) for x in query_vector) + "]"
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                f"""
+                SELECT id, post_id, text, metadata,
+                       1.0 - (embedding <=> $1::vector) AS score
+                FROM {table_name}
+                WHERE embedding IS NOT NULL
+                ORDER BY embedding <=> $1::vector ASC
+                LIMIT $2
+                """,
+                embedding_str,
+                k,
+            )
+        return [
+            {
+                "id": str(row["id"]),
+                "post_id": row["post_id"],
+                "text": row["text"],
+                "metadata": json.loads(row["metadata"]) if isinstance(row["metadata"], str) else row["metadata"],
+                "score": float(row["score"]),
+            }
+            for row in rows
+        ]
 
     async def bump_chunk_version(self, chunk_id: str, post_updated_at: datetime, table_name: Optional[str] = None) -> None:
         """Advance post_updated_at without re-embedding (text unchanged).

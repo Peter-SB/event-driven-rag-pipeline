@@ -150,6 +150,87 @@ async def test_summary_task_dispatched_when_title_changes(fake_bus, fake_exchang
 
 
 # ---------------------------------------------------------------------------
+# Title dispatching tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_title_task_not_published_on_first_sync_without_title_change(fake_bus, fake_exchange):
+    """Empty fields_changed new post added, so title task should be published."""
+    event = make_post_synced_event(post_id=11, fields_changed=[])
+    await fake_bus.publish("post.synced", event)
+
+    dispatcher = PostDispatcher.__new__(PostDispatcher)
+    dispatcher._event_bus = fake_bus
+
+    await dispatcher._dispatch_chunk_tasks(fake_exchange, event)
+
+    tasks = _published_tasks(fake_exchange)
+    title_tasks = [t for t in tasks if t.task_type == "title"]
+    assert len(title_tasks) == 1, "Title task should be published on first sync even if title not in fields_changed"
+
+
+@pytest.mark.asyncio
+async def test_title_task_dispatched_when_title_field_changes(fake_bus, fake_exchange):
+    """When title field changes, title task should be dispatched."""
+    event = make_post_synced_event(
+        post_id=13, fields_changed=["title"]
+    )
+    dispatcher = PostDispatcher.__new__(PostDispatcher)
+    dispatcher._event_bus = fake_bus
+
+    await dispatcher._dispatch_chunk_tasks(fake_exchange, event)
+
+    tasks = _published_tasks(fake_exchange)
+    assert any(t.task_type == "title" for t in tasks)
+
+
+@pytest.mark.asyncio
+async def test_title_task_dispatched_when_custom_title_field_changes(fake_bus, fake_exchange):
+    """When custom_title field changes, title task should be dispatched."""
+    event = make_post_synced_event(
+        post_id=14, fields_changed=["custom_title"]
+    )
+    dispatcher = PostDispatcher.__new__(PostDispatcher)
+    dispatcher._event_bus = fake_bus
+
+    await dispatcher._dispatch_chunk_tasks(fake_exchange, event)
+
+    tasks = _published_tasks(fake_exchange)
+    assert any(t.task_type == "title" for t in tasks)
+
+
+@pytest.mark.asyncio
+async def test_title_task_not_dispatched_when_only_body_changes(fake_bus, fake_exchange):
+    """When only body changes, title task should not be dispatched."""
+    event = make_post_synced_event(
+        post_id=15, fields_changed=["body_text"]
+    )
+    dispatcher = PostDispatcher.__new__(PostDispatcher)
+    dispatcher._event_bus = fake_bus
+
+    await dispatcher._dispatch_chunk_tasks(fake_exchange, event)
+
+    tasks = _published_tasks(fake_exchange)
+    assert all(t.task_type != "title" for t in tasks)
+
+
+@pytest.mark.asyncio
+async def test_title_task_uses_bge_small_model(fake_bus, fake_exchange):
+    """Title task should use bge-small-en-v1.5 model."""
+    event = make_post_synced_event(post_id=16, fields_changed=["title"])
+    dispatcher = PostDispatcher.__new__(PostDispatcher)
+    dispatcher._event_bus = fake_bus
+
+    await dispatcher._dispatch_chunk_tasks(fake_exchange, event)
+
+    tasks = _published_tasks(fake_exchange)
+    title_task = next((t for t in tasks if t.task_type == "title"), None)
+    assert title_task is not None
+    assert title_task.embed_model == EMBED_CONFIGS["title"].model
+    assert title_task.embed_model == "bge-small-en-v1.5"
+
+
+# ---------------------------------------------------------------------------
 # Published task payload correctness
 # ---------------------------------------------------------------------------
 
@@ -174,7 +255,7 @@ async def test_published_task_routing_key_is_cpu_chunk_post(fake_bus, fake_excha
 
     await dispatcher._dispatch_chunk_tasks(fake_exchange, event)
 
-    assert fake_exchange.all_routing_keys == ["cpu.chunk.post"]
+    assert fake_exchange.all_routing_keys == ["cpu.chunk.post", "cpu.chunk.post"]
 
 
 @pytest.mark.asyncio

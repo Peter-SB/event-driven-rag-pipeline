@@ -81,6 +81,19 @@ async def test_embed_task_uses_correct_model_for_summary_title(fake_bus, fake_ex
     assert task.model_name == EMBED_CONFIGS["summary_title"].model
 
 
+@pytest.mark.asyncio
+async def test_embed_task_uses_correct_model_for_title(fake_bus, fake_exchange):
+    event = make_chunks_created_event(post_id=8, task_type="title")
+    dispatcher = ChunkDispatcher.__new__(ChunkDispatcher)
+    dispatcher._event_bus = fake_bus
+
+    await dispatcher._dispatch_embedding(fake_exchange, _mock_route(), event)
+
+    task = _published_embed_tasks(fake_exchange)[0]
+    assert task.model_name == EMBED_CONFIGS["title"].model
+    assert task.model_name == "bge-small-en-v1.5"
+
+
 # ---------------------------------------------------------------------------
 # Routing key
 # ---------------------------------------------------------------------------
@@ -96,6 +109,19 @@ async def test_routing_key_contains_model_name(fake_bus, fake_exchange):
     # The routing key should embed the model name so GPU workers can filter
     assert len(fake_exchange.all_routing_keys) == 1
     assert EMBED_CONFIGS["body"].model in fake_exchange.all_routing_keys[0]
+
+
+@pytest.mark.asyncio
+async def test_routing_key_contains_title_model_name(fake_bus, fake_exchange):
+    event = make_chunks_created_event(post_id=9, task_type="title")
+    dispatcher = ChunkDispatcher.__new__(ChunkDispatcher)
+    dispatcher._event_bus = fake_bus
+
+    await dispatcher._dispatch_embedding(fake_exchange, _mock_route(), event)
+
+    # Title routing key should contain bge-small-en-v1.5
+    assert len(fake_exchange.all_routing_keys) == 1
+    assert "bge-small-en-v1.5" in fake_exchange.all_routing_keys[0]
 
 
 # ---------------------------------------------------------------------------

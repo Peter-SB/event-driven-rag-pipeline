@@ -459,3 +459,184 @@ async def test_multiple_posts_sync_concurrently(
         )
 
     logger.info("Multiple posts concurrent sync completed successfully")
+
+
+@pytest.mark.asyncio
+async def test_title_chunking_and_embedding_pipeline(
+    postgres_pool_e2e: asyncpg.Pool,
+    async_client: httpx.AsyncClient,
+):
+    """
+    Full pipeline for title embedding: POST /sync → title chunks → embeddings.
+
+    Flow:
+    1. POST /posts/sync with a post containing a title
+    2. Verify post.synced event
+    3. Poll until title chunks are created in the title chunk table
+    4. Verify chunks.created event with task_type="title"
+    5. Poll until title embeddings are written with bge-small-en-v1.5 (384 dim)
+    6. Verify embedding.completed event with correct model_name
+    7. Verify embedding dimensions are 384 (bge-small-en-v1.5)
+    """
+    post_id = 300
+
+    # Step 1: Create and sync a post with a title
+    sync_payload = {
+        "posts": [
+            {
+                "id": post_id,
+                "redditId": f"reddit_{post_id}",
+                "externalSource": "reddit",
+                "redditCreatedAt": datetime.now(UTC).isoformat(),
+                "url": f"https://reddit.com/r/test/comments/{post_id}",
+                "title": "Understanding Advanced Machine Learning Concepts",
+                "bodyText": (
+                    "This is some body text for the post. "
+                    "It should be chunked separately from the title. "
+                    "We want to verify that titles get their own chunks. " * 5
+                ),
+                "author": "test_user",
+                "addedAt": datetime.now(UTC).isoformat(),
+                "updatedAt": datetime.now(UTC).isoformat(),
+            }
+        ],
+        "library_id": "e2e",
+    }
+
+    response = await async_client.post("/posts/sync", json=sync_payload)
+    assert response.status_code == 200
+    sync_result = response.json()
+    assert sync_result["results"][0]["success"] is True
+    logger.info(f"POST /sync succeeded for post_id={post_id} with title")
+
+    # Step 2: Verify post.synced event was published
+    post_synced_events = await fetch_events(
+        postgres_pool_e2e, "post.synced", post_id, timeout=5.0
+    )
+    assert len(post_synced_events) >= 1
+    ps_event = post_synced_events[0]
+    assert ps_event["event_type"] == "post.synced"
+    assert ps_event["fields_changed"] == [], "New post should have empty fields_changed"
+    logger.info("post.synced event verified")
+
+    # Step 3: Wait for title chunks to be created in the title chunk table
+    title_chunk_table = "posts_e2e_chunks_title_bge_small_en_v1_5"
+    
+    # Wait for table to be created
+    table_exists = False
+    for attempt in range(20):
+        async with postgres_pool_e2e.acquire() as conn:
+            count = await conn.fetchval(
+                "SELECT COUNT(*)::int FROM information_schema.tables WHERE table_name = $1",
+                title_chunk_table,
+            )
+            if count == 1:
+                table_exists = True
+                break
+        await asyncio.sleep(0.5)
+
+    assert table_exists, f"Title chunk table {title_chunk_table} does not exist after 10s"
+    logger.info(f"Title chunk table {title_chunk_table} created successfully")
+
+    # Poll for title chunks to be created
+    title_chunks = []
+    for attempt in range(20):  # 20 attempts * 0.5s = 10s max wait
+        async with postgres_pool_e2e.acquire() as conn:
+            try:
+                rows = await conn.fetch(
+                    f"""
+                    SELECT * FROM {title_chunk_table}
+                    WHERE post_id = $1 ORDER BY chunk_index
+                    """,
+                    post_id,
+                )
+                if rows:
+                    title_chunks = rows
+                    break
+            except asyncpg.exceptions.UndefinedTableError:
+                pass
+        await asyncio.sleep(0.5)
+
+    assert len(title_chunks) > 0, f"No title chunks found after 10s for post_id={post_id}"
+    logger.info(f"Found {len(title_chunks)} title chunks for post_id={post_id}")
+
+    # Step 4: Verify chunks.created event with task_type="title"
+    title_chunks_created_events = await fetch_events(
+        postgres_pool_e2e, "chunks.created", post_id, timeout=5.0
+    )
+    # There may be multiple chunks.created events (body, title, etc.)
+    title_cc_event = None
+    for event in title_chunks_created_events:
+        if event.get("task_type") == "title":
+            title_cc_event = event
+            break
+
+    assert title_cc_event is not None, (
+        f"Expected chunks.created event with task_type='title', "
+        f"got events: {[e.get('task_type') for e in title_chunks_created_events]}"
+    )
+    assert title_cc_event["chunk_table"] == title_chunk_table
+    assert title_cc_event["chunk_count"] == len(title_chunks)
+    assert len(title_cc_event["chunk_ids"]) == len(title_chunks)
+    logger.info(
+        "chunks.created event verified for title: task_type=%s chunk_count=%s",
+        title_cc_event["task_type"],
+        title_cc_event["chunk_count"],
+    )
+
+    # Step 5: Poll for title embeddings to be written
+    title_embeddings = []
+    for attempt in range(20):  # 20 attempts * 0.5s = 10s max wait
+        async with postgres_pool_e2e.acquire() as conn:
+            rows = await conn.fetch(
+                f"""
+                SELECT id, embedding FROM {title_chunk_table}
+                WHERE post_id = $1 AND embedding IS NOT NULL
+                """,
+                post_id,
+            )
+            if len(rows) == len(title_chunks):
+                title_embeddings = rows
+                break
+        await asyncio.sleep(0.5)
+
+    assert len(title_embeddings) == len(title_chunks), (
+        f"Expected {len(title_chunks)} title embeddings, found {len(title_embeddings)}"
+    )
+    logger.info(f"All {len(title_embeddings)} title chunks have embeddings")
+
+    # Step 6: Verify embedding.completed event with bge-small-en-v1.5 model
+    embed_completed_events = await fetch_events(
+        postgres_pool_e2e, "embedding.completed", post_id, timeout=5.0
+    )
+    title_embed_event = None
+    for event in embed_completed_events:
+        if event.get("model_name") == "bge-small-en-v1.5":
+            title_embed_event = event
+            break
+
+    assert title_embed_event is not None, (
+        f"Expected embedding.completed event with model_name='bge-small-en-v1.5', "
+        f"got models: {[e.get('model_name') for e in embed_completed_events]}"
+    )
+    assert title_embed_event["chunk_table"] == title_chunk_table
+    assert len(title_embed_event["chunk_ids"]) == len(title_chunks)
+    logger.info(
+        "embedding.completed event verified for title: model=%s chunk_count=%s",
+        title_embed_event["model_name"],
+        len(title_embed_event["chunk_ids"]),
+    )
+
+    # Step 7: Verify title embeddings have correct dimension (384)
+    embedding_dim = 384  # bge-small-en-v1.5 dimension
+    for row in title_embeddings:
+        raw = row["embedding"]
+        assert raw is not None, "Title embedding should not be null"
+        import json
+        embedding = json.loads(raw) if isinstance(raw, str) else list(raw)
+        assert len(embedding) == embedding_dim, (
+            f"Title embedding dimension should be {embedding_dim}, got {len(embedding)}"
+        )
+        assert all(isinstance(v, float) for v in embedding), "Title embedding should contain floats"
+
+    logger.info("Title embedding pipeline test completed successfully")

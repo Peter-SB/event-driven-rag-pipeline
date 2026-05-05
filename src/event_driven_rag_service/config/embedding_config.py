@@ -26,6 +26,7 @@ CHUNK_CONFIG = ChunkConfig(
 EMBED_CONFIGS: dict[str, EmbedConfig] = {
     "body":          EmbedConfig(model="bge-base-v1.5", queue="gpu.embed.bge-base-v1.5", dim=768),
     "summary_title": EmbedConfig(model="bge-base-v1.5", queue="gpu.embed.bge-base-v1.5", dim=768),
+    "title":         EmbedConfig(model="bge-small-en-v1.5", queue="gpu.embed.bge-small-en-v1.5", dim=384),
     "query":         EmbedConfig(model="bge-base-v1.5", queue="gpu.embed.bge-base-v1.5", dim=768),
     "analysis":      EmbedConfig(model="qwen3-0.6b",    queue="gpu.embed.qwen3-0.6b",    dim=1024),
 }
