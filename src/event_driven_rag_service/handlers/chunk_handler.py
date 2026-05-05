@@ -28,16 +28,17 @@ from event_driven_rag_service.data_models.post import Post
 from event_driven_rag_service.events.chunk_events import ChunksCreatedEvent
 from event_driven_rag_service.infrastructure.event_bus import EventBusBase
 from event_driven_rag_service.tasks.chunk_task import ChunkTask
-from event_driven_rag_service.utils.boundary_chunker import (
+from event_driven_rag_service.utils.chunk_strategies import (
     ChunkAtBoundaryStrategy,
-    chunk_at_boundaries,
+    SplitTextAtIndexStrategy,
+    ChunkStrategy,
 )
 
 logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Character-based fallback (used when text is too short for boundary chunking)
+# Character-based fallback (used when text is too short for boundary chunking) # todo: remove?
 # ---------------------------------------------------------------------------
 
 _CHAR_TARGET = 2_048   # ≈ 512 tokens at 4 chars/token
@@ -87,10 +88,20 @@ _default_strategy = ChunkAtBoundaryStrategy(
     overlap=CHUNK_CONFIG.chunk_overlap,
 )
 
+_summary_strategy = SplitTextAtIndexStrategy(max_chars=4_096)
 
-def _chunk_text(text: str) -> list[str]:
-    """Split text using the boundary-aware strategy; fall back to char-based if needed."""
-    windows = _default_strategy.chunk(text)
+
+def _select_strategy(task_type: str):
+    """Select the appropriate chunking strategy based on task_type."""
+    if task_type == "summary_title":
+        return _summary_strategy
+    return _default_strategy
+
+
+def _chunk_text(text: str, strategy: ChunkStrategy | None = None) -> list[str]:
+    """Split text using the specified strategy; fall back to char-based if needed."""
+    strategy = strategy or _default_strategy
+    windows = strategy.chunk(text)
     if not windows:
         windows = _split_text_fallback(text)
     return windows
@@ -107,8 +118,10 @@ def _build_chunks(
     text: str,
     title: str | None,
     external_id: str | None = None,
+    task_type: str = "body",
 ) -> list[Chunk]:
-    windows = _chunk_text(text)
+    strategy = _select_strategy(task_type)
+    windows = _chunk_text(text, strategy)
     now = datetime.now(UTC).isoformat()
     return [
         Chunk(
@@ -219,6 +232,7 @@ class ChunkPostHandler:
             text=text,
             title=getattr(post, "title"),
             external_id=getattr(post, "external_id"),
+            task_type=task.task_type,
         )
 
         new_chunks = [c for c in all_chunks if c.text_hash not in existing_hashes]
@@ -265,7 +279,12 @@ class ChunkPostHandler:
         if task.task_type == "summary_title":
             title   = (getattr(post, "title") or "").strip()
             summary = (getattr(post, "summary") or "").strip()
-            combined = "\n\n".join(part for part in (title, summary) if part)
+            parts = []
+            if title:
+                parts.append(f"Title: {title}")
+            if summary:
+                parts.append(f"Summary: {summary}")
+            combined = "\n\n".join(parts)
             return combined or None
 
         if task.task_type == "analysis":

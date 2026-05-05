@@ -17,7 +17,7 @@ import dataclasses
 from typing import Literal, Optional
 
 from .base_task import BaseTask
-from event_driven_rag_service.utils.boundary_chunker import chunk_at_boundaries
+from event_driven_rag_service.utils.chunk_strategies import chunk_at_boundaries
 
 
 class ChunkTask(BaseTask):

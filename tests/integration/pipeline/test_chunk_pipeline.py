@@ -382,3 +382,121 @@ async def test_consumer_offset_advances_after_dispatcher_runs(clean_pipeline_tab
     assert offset > 0, "Offset should have advanced"
 
     await channel.close()
+
+
+# ---------------------------------------------------------------------------
+# summary_title task type tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_summary_title_chunk_text_format_in_db(clean_pipeline_tables):
+    """Full pipeline: summary_title task produces chunk with 'Title: ... Summary: ...' format in DB."""
+    fixtures = clean_pipeline_tables
+    postgres_pool: asyncpg.Pool = fixtures["postgres_pool"]
+    post_repo: PostRepository = fixtures["post_repo"]
+    post_table: str = fixtures["post_table"]
+
+    bus = await _setup_bus(postgres_pool)
+
+    # Create a post with title and summary
+    post = make_post(
+        post_id=200,
+        body_text="This body text is ignored for summary_title task",
+        title="Understanding Vector Embeddings",
+        summary="A guide to how embeddings work in modern ML systems.",
+        updated_at=None,
+    )
+    _, _ = await post_repo.upsert(post, post_table)
+
+    # Create handler for summary_title chunks
+    chunk_table = "posts_pipeline_test_chunks_summary_title_bge_base_v1_5"
+    chunk_repo = ChunkRepository(postgres_pool, table_name=chunk_table, vector_dim=768)
+    handler = ChunkPostHandler(
+        post_fetcher=post_repo,
+        chunk_store=chunk_repo,
+        version_checker=chunk_repo,
+        event_log=bus,
+    )
+
+    # Create and execute summary_title task
+    task = ChunkTask(
+        task_type="summary_title",
+        post_id=200,
+        post_table=post_table,
+        embed_model="bge-base-v1.5",
+    )
+
+    chunk_ids = await handler.handle(task)
+    assert len(chunk_ids) > 0, "Handler should create at least one chunk"
+
+    # Query the DB and verify chunk text format
+    async with postgres_pool.acquire() as conn:
+        chunk_rows = await conn.fetch(
+            f"SELECT text FROM {chunk_table} WHERE post_id = $1",
+            200,
+        )
+
+    assert len(chunk_rows) >= 1, "Chunk should be persisted in DB"
+    chunk_text = chunk_rows[0]["text"]
+
+    # Verify format: "Title: ... Summary: ..."
+    assert chunk_text.startswith("Title: Understanding Vector Embeddings"), \
+        f"Chunk text should start with 'Title:', got: {chunk_text[:100]}"
+    assert "Summary: A guide to how embeddings work" in chunk_text, \
+        f"Chunk text should contain 'Summary:' label, got: {chunk_text}"
+
+    # Verify the event was published with correct task_type
+    created_event = await _consume_one_event(bus, "chunks.created", "test.summary_title.group", timeout=3.0)
+    assert created_event["post_id"] == 200
+    assert created_event["task_type"] == "summary_title"
+    assert created_event["chunk_table"] == chunk_table
+    assert set(created_event["chunk_ids"]) == set(chunk_ids)
+
+
+@pytest.mark.asyncio
+async def test_summary_title_single_chunk_for_typical_length(clean_pipeline_tables):
+    """summary_title task should produce exactly one chunk for typical length data."""
+    fixtures = clean_pipeline_tables
+    postgres_pool: asyncpg.Pool = fixtures["postgres_pool"]
+    post_repo: PostRepository = fixtures["post_repo"]
+    post_table: str = fixtures["post_table"]
+
+    bus = await _setup_bus(postgres_pool)
+
+    # Create a post with moderate title/summary (typical case)
+    post = make_post(
+        post_id=201,
+        title="Machine Learning Basics",
+        summary="An introduction to core ML concepts and algorithms.",
+        updated_at=None,
+    )
+    _, _ = await post_repo.upsert(post, post_table)
+
+    chunk_table = "posts_pipeline_test_chunks_summary_title_bge_base_v1_5"
+    chunk_repo = ChunkRepository(postgres_pool, table_name=chunk_table, vector_dim=768)
+    handler = ChunkPostHandler(
+        post_fetcher=post_repo,
+        chunk_store=chunk_repo,
+        version_checker=chunk_repo,
+        event_log=bus,
+    )
+
+    task = ChunkTask(
+        task_type="summary_title",
+        post_id=201,
+        post_table=post_table,
+        embed_model="bge-base-v1.5",
+    )
+
+    chunk_ids = await handler.handle(task)
+
+    # Verify exactly one chunk was created
+    async with postgres_pool.acquire() as conn:
+        count = await conn.fetchval(
+            f"SELECT COUNT(*) FROM {chunk_table} WHERE post_id = $1",
+            201,
+        )
+
+    assert count == 1, "summary_title should produce exactly one chunk for typical length"
+    assert len(chunk_ids) == 1

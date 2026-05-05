@@ -14,7 +14,6 @@ class Post(BaseModel):
     Wire format uses camelCase aliases (matching the Reddit sync client).
     DB row format uses snake_case. Both are accepted via populate_by_name=True.
     """
-
     post_id: int = Field(..., alias="id")
 
     # Source identity — universal fields present for every source
@@ -31,7 +30,7 @@ class Post(BaseModel):
     subreddit: Optional[str] = None
 
     added_at: datetime = Field(..., alias="addedAt")
-    updated_at: datetime = Field(..., alias="updatedAt")
+    updated_at: datetime = Field(..., alias="updatedAt") # Created at value updated by client, used for freshness comparison on upsert
 
     custom_title: Optional[str] = Field(None, alias="customTitle")
     custom_body: Optional[str] = Field(None, alias="customBody")

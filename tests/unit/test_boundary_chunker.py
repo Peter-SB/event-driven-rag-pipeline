@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import pytest
 
-from event_driven_rag_service.utils.boundary_chunker import (
+from event_driven_rag_service.utils.chunk_strategies import (
     ChunkAtBoundaryStrategy,
     chunk_at_boundaries,
     word_count,

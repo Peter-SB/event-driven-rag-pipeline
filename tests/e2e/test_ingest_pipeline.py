@@ -166,7 +166,7 @@ async def test_sync_post_triggers_chunk_and_embed_pipeline(
     assert response.status_code == 200
     sync_result = response.json()
     assert len(sync_result["results"]) == 1
-    assert sync_result["results"][0]["success"] is True
+    assert sync_result["results"][0]["success"] is True, f"POST /posts/sync should succeed, got response: {sync_result}"
     logger.info(f"POST /sync succeeded for post_id={post_id}")
 
     # Step 1.2: Verify post exists in DB (optional sanity check)

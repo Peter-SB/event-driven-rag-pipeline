@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import dataclasses
 from dataclasses import dataclass, field
+from typing import Protocol
 
 MARKERS = ["***", "---", "\n\n", "\n", "."]
 
@@ -216,7 +217,12 @@ def chunk_at_boundaries(
 # ---------------------------------------------------------------------------
 
 @dataclass
-class ChunkAtBoundaryStrategy:
+class ChunkStrategy(Protocol):
+    def chunk(self, text: str) -> list[str]:
+        ...
+
+@dataclass
+class ChunkAtBoundaryStrategy(ChunkStrategy):
     """Callable wrapper around ``chunk_at_boundaries`` with baked-in defaults.
 
     Use this when you need to pass a configured chunker as an object rather
@@ -243,3 +249,25 @@ class ChunkAtBoundaryStrategy:
             overlap=self.overlap,
             start_offset=self.start_offset,
         )
+
+
+@dataclass
+class SplitTextAtIndexStrategy(ChunkStrategy):
+    """Single-chunk strategy for short text fields (e.g., summary_title).
+
+    Returns the whole text as one chunk unless it exceeds max_chars,
+    in which case it hard-splits at character boundaries (no overlap).
+    Used for text that should be kept intact unless a hard fail-safe limit is hit.
+    """
+
+    max_chars: int = 4_096  # ~1024 tokens at 4 chars/token
+
+    def chunk(self, text: str) -> list[str]:
+        """Split text into chunks, each at most max_chars.
+
+        If text fits within max_chars, returns a single-element list.
+        Otherwise, hard-splits at character boundaries.
+        """
+        if len(text) <= self.max_chars:
+            return [text]
+        return [text[i : i + self.max_chars] for i in range(0, len(text), self.max_chars)]

@@ -25,7 +25,9 @@ from event_driven_rag_service.tasks.chunk_task import ChunkTask
 from event_driven_rag_service.handlers.chunk_handler import (
     ChunkPostHandler,
     _build_chunks,
+    _select_strategy,
 )
+from event_driven_rag_service.utils.chunk_strategies import SplitTextAtIndexStrategy
 from tests.utils.factories import (
     FakeEventBus,
     FakePostFetcher,
@@ -208,7 +210,7 @@ def test_resolve_text_summary_title_combines_title_and_summary():
 def test_resolve_text_summary_title_handles_missing_summary():
     task = ChunkTask(task_type="summary_title", post_id=1, post_table="posts_main", embed_model="bge-base-v1.5")
     post = make_post(title="Only Title", summary=None)
-    assert ChunkPostHandler._resolve_text(task, post) == "Only Title"
+    assert ChunkPostHandler._resolve_text(task, post) == "Title: Only Title"
 
 
 def test_resolve_text_returns_none_when_both_title_and_summary_absent():
@@ -329,3 +331,123 @@ def test_chunk_task_derives_table_name_correctly():
         embed_model="bge-base-v1.5",
     )
     assert task2.chunk_table_name() == "posts_test_chunks_summary_title_bge_base_v1_5"
+
+
+# ---------------------------------------------------------------------------
+# SplitTextAtIndexStrategy tests
+# ---------------------------------------------------------------------------
+
+def test_split_text_at_index_returns_single_chunk_for_short_text():
+    """Text under max_chars should be returned as a single chunk."""
+    strategy = SplitTextAtIndexStrategy(max_chars=1000)
+    text = "Short text that fits easily within the limit."
+    chunks = strategy.chunk(text)
+    assert len(chunks) == 1
+    assert chunks[0] == text
+
+
+def test_split_text_at_index_splits_long_text_at_max_chars():
+    """Text exceeding max_chars should be split at character boundaries."""
+    strategy = SplitTextAtIndexStrategy(max_chars=50)
+    text = "a" * 150  # 150 chars, exceeds 50-char limit
+    chunks = strategy.chunk(text)
+    assert len(chunks) == 3  # 50 + 50 + 50
+    assert all(len(c) <= 50 for c in chunks)
+    assert "".join(chunks) == text
+
+
+def test_split_text_at_index_strategy_selected_for_summary_title():
+    """_select_strategy should return SplitTextAtIndexStrategy for summary_title."""
+    strategy = _select_strategy("summary_title")
+    assert isinstance(strategy, SplitTextAtIndexStrategy)
+
+
+# ---------------------------------------------------------------------------
+# Updated _resolve_text tests for summary_title format
+# ---------------------------------------------------------------------------
+
+def test_resolve_text_summary_title_format_includes_labels():
+    """summary_title _resolve_text should format with 'Title:' and 'Summary:' labels."""
+    task = ChunkTask(task_type="summary_title", post_id=1, post_table="posts_main", embed_model="bge-base-v1.5")
+    post = make_post(title="My Article Title", summary="This is a brief summary.")
+    result = ChunkPostHandler._resolve_text(task, post)
+    assert "Title: My Article Title" in result
+    assert "Summary: This is a brief summary." in result
+    assert result.startswith("Title:")
+
+
+def test_resolve_text_summary_title_only_title():
+    """summary_title with only title should format correctly."""
+    task = ChunkTask(task_type="summary_title", post_id=1, post_table="posts_main", embed_model="bge-base-v1.5")
+    post = make_post(title="Only Title", summary=None)
+    result = ChunkPostHandler._resolve_text(task, post)
+    assert result == "Title: Only Title"
+
+
+def test_resolve_text_summary_title_only_summary():
+    """summary_title with only summary should format correctly."""
+    task = ChunkTask(task_type="summary_title", post_id=1, post_table="posts_main", embed_model="bge-base-v1.5")
+    post = make_post(title=None, summary="Only summary text.")
+    result = ChunkPostHandler._resolve_text(task, post)
+    assert result == "Summary: Only summary text."
+
+
+# ---------------------------------------------------------------------------
+# Handler tests for summary_title chunking
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_handle_summary_title_produces_single_chunk_for_short_text():
+    """Handler with summary_title task type should produce a single chunk for typical data."""
+    post = {
+        "body_text": "ignored",
+        "title": "Understanding AI",
+        "summary": "A comprehensive guide to artificial intelligence concepts.",
+        "updated_at": "2024-01-01T00:00:00+00:00",
+    }
+    task = ChunkTask(task_type="summary_title", post_id=50, post_table="posts_main", embed_model="bge-base-v1.5")
+    handler, store, _ = _make_handler(post)
+
+    chunk_ids = await handler.handle(task)
+
+    assert len(store.inserted_chunks) == 1, "summary_title should produce exactly one chunk"
+    assert chunk_ids == [store.inserted_chunks[0].id]
+
+
+@pytest.mark.asyncio
+async def test_handle_summary_title_chunk_text_has_correct_format():
+    """The chunk text for summary_title should start with 'Title:' and contain 'Summary:'."""
+    post = {
+        "body_text": "ignored",
+        "title": "My Test Title",
+        "summary": "My test summary.",
+        "updated_at": "2024-01-01T00:00:00+00:00",
+    }
+    task = ChunkTask(task_type="summary_title", post_id=51, post_table="posts_main", embed_model="bge-base-v1.5")
+    handler, store, _ = _make_handler(post)
+
+    await handler.handle(task)
+
+    assert len(store.inserted_chunks) == 1
+    chunk_text = store.inserted_chunks[0].text
+    assert chunk_text.startswith("Title: My Test Title")
+    assert "Summary: My test summary." in chunk_text
+
+
+@pytest.mark.asyncio
+async def test_handle_summary_title_publishes_correct_event():
+    """Handler should publish chunks.created event with summary_title task_type."""
+    post = {
+        "body_text": "ignored",
+        "title": "Title",
+        "summary": "Summary.",
+        "updated_at": "2024-01-01T00:00:00+00:00",
+    }
+    task = ChunkTask(task_type="summary_title", post_id=52, post_table="posts_main", embed_model="bge-base-v1.5")
+    handler, _, bus = _make_handler(post)
+
+    await handler.handle(task)
+
+    events = bus.peek_topic("chunks.created")
+    assert len(events) == 1
+    assert events[0]["task_type"] == "summary_title"
