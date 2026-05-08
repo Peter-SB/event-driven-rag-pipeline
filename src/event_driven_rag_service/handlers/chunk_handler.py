@@ -18,16 +18,26 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import time
 import uuid
 from datetime import datetime, UTC
 from typing import Protocol
+
+from opentelemetry import trace
 
 from event_driven_rag_service.config.embedding_config import CHUNK_CONFIG, EMBED_CONFIGS
 from event_driven_rag_service.data_models.chunk import Chunk, ChunkMetadata
 from event_driven_rag_service.data_models.post import Post
 from event_driven_rag_service.events.chunk_events import ChunksCreatedEvent
 from event_driven_rag_service.infrastructure.event_bus import EventBusBase
+from event_driven_rag_service.infrastructure.metrics import (
+    record_chunks_created,
+    record_chunks_deduplicated,
+    record_chunking_latency,
+    record_failure,
+)
 from event_driven_rag_service.tasks.chunk_task import ChunkTask
+from event_driven_rag_service.utils.tracing_utils import extract_trace_context
 from event_driven_rag_service.utils.chunk_strategies import (
     ChunkAtBoundaryStrategy,
     SplitTextAtIndexStrategy,
@@ -191,84 +201,119 @@ class ChunkPostHandler:
 
         Returns an empty list when text is missing or all chunks are already current.
         """
-        post = await self._posts.fetch(task.post_id, task.post_table)
-        if not post:
-            logger.warning("ChunkPostHandler: post %d not found", task.post_id)
-            return []
+        start_time = time.time()
 
-        text = self._resolve_text(task, post)
+        # Restore the parent context from the task so this span is a child of
+        # the dispatcher span that published the task.
+        parent_ctx = extract_trace_context(task.trace_id, task.parent_span_id)
+        tracer = trace.get_tracer(__name__)
 
-        if not text:
-            logger.warning(
-                "ChunkPostHandler: no text for post %d task_type=%s — skipping",
-                task.post_id,
-                task.task_type,
+        with tracer.start_as_current_span("chunk_post", context=parent_ctx) as span:
+            span.set_attribute("post_id", task.post_id)
+            span.set_attribute("task_type", task.task_type)
+
+            post = await self._posts.fetch(task.post_id, task.post_table)
+            if not post:
+                logger.warning("ChunkPostHandler: post %d not found", task.post_id)
+                span.set_attribute("skipped_reason", "post_not_found")
+                return []
+
+            text = self._resolve_text(task, post)
+
+            if not text:
+                logger.warning(
+                    "ChunkPostHandler: no text for post %d task_type=%s — skipping",
+                    task.post_id,
+                    task.task_type,
+                )
+                span.set_attribute("skipped_reason", "no_text")
+                return []
+
+            chunk_table = task.chunk_table_name()
+            post_updated_at = str(getattr(post, "updated_at", "") or "")
+
+            embed_config = EMBED_CONFIGS.get(task.task_type)
+            if not embed_config:
+                logger.error(
+                    "ChunkPostHandler: no embedding config for task_type=%s",
+                    task.task_type,
+                )
+                span.set_attribute("skipped_reason", "no_embed_config")
+                return []
+            vector_dim = embed_config.dim
+
+            await self._chunks.ensure_table(chunk_table, vector_dim)
+
+            existing_hashes: dict[str, str] = await self._versions.get_text_hashes(
+                task.post_id, chunk_table
             )
-            return []
 
-        chunk_table = task.chunk_table_name()
-        post_updated_at = str(getattr(post, "updated_at", "") or "")
-
-        # Get vector dimension for this task type from embedding config
-        embed_config = EMBED_CONFIGS.get(task.task_type)
-        if not embed_config:
-            logger.error(
-                "ChunkPostHandler: no embedding config for task_type=%s",
-                task.task_type,
+            all_chunks = _build_chunks(
+                post_id=task.post_id,
+                post_updated_at=post_updated_at,
+                text=text,
+                title=getattr(post, "title"),
+                external_id=getattr(post, "external_id"),
+                task_type=task.task_type,
             )
-            return []
-        vector_dim = embed_config.dim
 
-        # Lazily ensure the chunk table exists
-        await self._chunks.ensure_table(chunk_table, vector_dim)
+            new_chunks = [c for c in all_chunks if c.text_hash not in existing_hashes]
+            skipped_count = len(all_chunks) - len(new_chunks)
 
-        existing_hashes: dict[str, str] = await self._versions.get_text_hashes(
-            task.post_id, chunk_table
-        )
+            span.set_attribute("total_chunks", len(all_chunks))
+            span.set_attribute("new_chunks", len(new_chunks))
+            span.set_attribute("skipped_chunks", skipped_count)
 
-        all_chunks = _build_chunks(
-            post_id=task.post_id,
-            post_updated_at=post_updated_at,
-            text=text,
-            title=getattr(post, "title"),
-            external_id=getattr(post, "external_id"),
-            task_type=task.task_type,
-        )
+            if not new_chunks:
+                logger.info(
+                    "ChunkPostHandler: all %d chunks already current for post %d — skipping",
+                    len(all_chunks),
+                    task.post_id,
+                )
+                if skipped_count > 0:
+                    record_chunks_deduplicated(skipped_count, task.task_type)
+                return []
 
-        new_chunks = [c for c in all_chunks if c.text_hash not in existing_hashes]
+            await self._chunks.bulk_insert(new_chunks, chunk_table)
 
-        if not new_chunks:
+            chunk_ids = [c.id for c in new_chunks]
+
+            # Record metrics: new chunks created + deduplication
+            record_chunks_created(len(new_chunks), task.task_type)
+            if skipped_count > 0:
+                record_chunks_deduplicated(skipped_count, task.task_type)
+
+            # Propagate the current span (chunk_post) into the chunks.created event.
+            # Falls back to task.trace_id when OTEL is disabled.
+            from event_driven_rag_service.utils.tracing_utils import propagate_trace
+            trace_id, parent_span_id = propagate_trace(task.trace_id)
+
+            event = ChunksCreatedEvent(
+                post_id=task.post_id,
+                post_table=task.post_table,
+                chunk_ids=chunk_ids,
+                chunk_table=chunk_table,
+                task_type=task.task_type,
+                chunk_count=len(new_chunks),
+                trace_id=trace_id,
+                parent_span_id=parent_span_id,
+                created_at=datetime.now(UTC),
+            )
+            await self._event_log.publish(event.event_type, event.to_dict())
+
+            # Record latency at the end
+            latency_seconds = time.time() - start_time
+            record_chunking_latency(latency_seconds, task.task_type)
+
             logger.info(
-                "ChunkPostHandler: all %d chunks already current for post %d — skipping",
-                len(all_chunks),
+                "ChunkPostHandler: post %d (%s) → %d new chunks (skipped %d unchanged)",
                 task.post_id,
+                task.task_type,
+                len(new_chunks),
+                len(all_chunks) - len(new_chunks),
             )
-            return []
 
-        await self._chunks.bulk_insert(new_chunks, chunk_table)
-
-        chunk_ids = [c.id for c in new_chunks]
-        event = ChunksCreatedEvent(
-            post_id=task.post_id,
-            post_table=task.post_table,
-            chunk_ids=chunk_ids,
-            chunk_table=chunk_table,
-            task_type=task.task_type,
-            chunk_count=len(new_chunks),
-            trace_id=task.trace_id,
-            created_at=datetime.now(UTC),
-        )
-        await self._event_log.publish(event.event_type, event.to_dict())
-
-        logger.info(
-            "ChunkPostHandler: post %d (%s) → %d new chunks (skipped %d unchanged)",
-            task.post_id,
-            task.task_type,
-            len(new_chunks),
-            len(all_chunks) - len(new_chunks),
-        )
-
-        return chunk_ids
+            return chunk_ids
 
     @staticmethod
     def _resolve_text(task: ChunkTask, post: Post) -> str | None:

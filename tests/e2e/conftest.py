@@ -79,7 +79,7 @@ async def _purge_queues(rmq_url: str) -> None:
         async with conn.channel() as ch:
             for q in _EMBED_QUEUES:
                 try:
-                    queue = await ch.declare_queue(q, passive=True)
+                    queue = await ch.declare_queue(q, passive=True) # todo: what what passive=True does if queue doesn't exist? 
                     await queue.purge()
                 except Exception:
                     pass  # Queue may not exist yet on first run

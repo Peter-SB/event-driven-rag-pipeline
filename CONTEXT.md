@@ -126,6 +126,9 @@ Source-agnostic: `external_id`, `external_source`, `external_created_at`.
 `subreddit` is nullable. The client-facing wire format uses camelCase aliases
 (`redditId`, `externalSource`, …) so the Reddit sync client requires no changes.
 
+### Post updated_at
+The `updated_at` field is used for freshness and comes from the source, never use the system time.
+
 ### Worker Deployment
 Workers run as separate processes with their own entrypoints:
 - `python -m event_driven_rag_service.worker.entrypoints.cpu`

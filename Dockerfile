@@ -16,5 +16,6 @@ COPY src/ src/
 
 # Ensure the package is importable as event_driven_rag_service
 ENV PYTHONPATH=/app/src
+ENV PYTHONUNBUFFERED=1
 
 CMD ["uvicorn", "event_driven_rag_service.api.app:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -10,6 +10,7 @@ volumes:
   pg_data:
   rabbitmq_data:
   redpanda_data:
+  prometheus_data:
 
 # Services
 services:
@@ -51,10 +52,11 @@ services:
     networks:
       - rag
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "ping"]
-      interval: 10s
-      timeout: 10s
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
+      interval: 5s
+      timeout: 5s
       retries: 10
+      start_period: 15s  # Give RabbitMQ 15s to start before first healthcheck
 
   # ─── Redpanda (Kafka-compatible, single-node homelab) ────────────────────
   redpanda:
@@ -113,6 +115,11 @@ services:
       RABBITMQ_URL: "amqp://rag:rag@rabbitmq:5672/"
       REDPANDA_SERVERS: "redpanda:29092"
       EVENT_BUS: "${EVENT_BUS:-postgres}"
+      # Observability — off by default, no overhead.  Set OTEL_ENABLED=true to
+      # activate structured JSON logs + OTLP trace export.
+      OTEL_ENABLED: "${OTEL_ENABLED:-false}"
+      OTEL_SERVICE_NAME: "rag-api"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}"
     ports:
       - "${API_PORT:-8000}:8000"
     networks:
@@ -136,6 +143,9 @@ services:
       RABBITMQ_URL: "amqp://rag:rag@rabbitmq:5672/"
       REDPANDA_SERVERS: "redpanda:29092"
       EVENT_BUS: "${EVENT_BUS:-postgres}"
+      OTEL_ENABLED: "${OTEL_ENABLED:-false}"
+      OTEL_SERVICE_NAME: "rag-cpu-worker"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}"
     networks:
       - rag
     depends_on:
@@ -158,6 +168,9 @@ services:
       REDPANDA_SERVERS: "redpanda:29092"
       EVENT_BUS: "${EVENT_BUS:-postgres}"
       MOCK_EMBEDDINGS: "${MOCK_EMBEDDINGS:-1}"
+      OTEL_ENABLED: "${OTEL_ENABLED:-false}"
+      OTEL_SERVICE_NAME: "rag-gpu-worker"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}"
     networks:
       - rag
     depends_on:
@@ -187,6 +200,9 @@ services:
       RABBITMQ_URL: "amqp://rag:rag@rabbitmq:5672/"
       REDPANDA_SERVERS: "redpanda:29092"
       EVENT_BUS: "${EVENT_BUS:-postgres}"
+      OTEL_ENABLED: "${OTEL_ENABLED:-false}"
+      OTEL_SERVICE_NAME: "rag-dispatcher"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}"
     networks:
       - rag
     depends_on:
@@ -195,3 +211,83 @@ services:
       rabbitmq:
         condition: service_healthy
     command: python -m event_driven_rag_service.worker.entrypoints.dispatcher
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Observability Stack (Traces + Metrics + Dashboards)
+  # ═══════════════════════════════════════════════════════════════════════════
+  # To enable: set OTEL_ENABLED=true
+  # Then access:
+  #   - Jaeger traces: http://localhost:16686
+  #   - Prometheus metrics: http://localhost:9090
+  #   - Grafana dashboards: http://localhost:3000
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # ─── OpenTelemetry Collector ──────────────────────────────────────────────
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    container_name: rag-otel-collector
+    restart: unless-stopped
+    command: [--config=/etc/otel-collector-config.yaml]
+    volumes:
+      - ./config/otel-collector-config.yaml:/etc/otel-collector-config.yaml
+    ports:
+      - "4317:4317"       # OTLP gRPC receiver (used by SDK)
+      - "4318:4318"       # OTLP HTTP receiver
+      - "9411:9411"       # Zipkin receiver
+    networks:
+      - rag
+    depends_on:
+      - jaeger
+
+  # ─── Jaeger (Distributed Tracing) ─────────────────────────────────────────
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: rag-jaeger
+    restart: unless-stopped
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "6831:6831/udp"   # Jaeger agent (compact format)
+      - "6832:6832/udp"   # Jaeger agent (binary format)
+      - "5775:5775/udp"   # Jaeger agent (zipkin-compact)
+      - "5778:5778"       # Jaeger agent (HTTP)
+      - "14268:14268"     # Jaeger collector HTTP
+      - "14250:14250"     # Jaeger collector gRPC
+      - "16686:16686"     # Jaeger UI (access traces here)
+    networks:
+      - rag
+
+  # ─── Prometheus (Metrics Scraper) ─────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: rag-prometheus
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.enable-lifecycle"
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - rag
+
+  # ─── Grafana (Dashboards) ────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:latest
+    container_name: rag-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_PASSWORD:-admin}"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./config/grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./config/grafana/datasources:/etc/grafana/provisioning/datasources
+    ports:
+      - "3000:3000"
+    networks:
+      - rag
+    depends_on:
+      - prometheus

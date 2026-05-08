@@ -12,12 +12,14 @@ the inference pipeline is built.
 import logging
 
 import aio_pika
+from opentelemetry import trace
 
 from event_driven_rag_service.config import consumer_groups
 from event_driven_rag_service.config.embedding_config import EMBED_CONFIGS
 from event_driven_rag_service.infrastructure.event_bus import EventBusBase
 from event_driven_rag_service.tasks.chunk_task import ChunkTask
 from event_driven_rag_service.tasks.registry import TASK_ROUTES
+from event_driven_rag_service.utils.tracing_utils import extract_trace_context, propagate_trace
 
 logger = logging.getLogger(__name__)
 
@@ -60,29 +62,53 @@ class PostDispatcher:
     async def _dispatch_chunk_tasks(
         self, exchange: aio_pika.abc.AbstractExchange, event: dict
     ) -> None:
-        post_id = event["post_id"]
-        post_table = event["post_table"]
-        fields_changed: list[str] = event.get("fields_changed", [])
-        has_summary: bool = event.get("has_summary", False)
+        # Restore the parent span context from the event so this span becomes
+        # a child of the API's sync_posts span.  If the event has no trace_id
+        # (e.g., events from before Phase 2), parent_ctx is None and we start
+        # a new root span — graceful degradation, no crash.
+        parent_ctx = extract_trace_context(
+            event.get("trace_id"), event.get("parent_span_id")
+        )
+        tracer = trace.get_tracer(__name__)
 
-        # An empty fields_changed means "first sync" — dispatch everything.
-        # Otherwise only dispatch when the relevant field changed.
-        body_changed = not fields_changed or any(
-            f in fields_changed for f in ("body_text", "custom_body")
-        )
-        title_changed = not fields_changed or any(
-            f in fields_changed for f in ("title", "custom_title")
-        )
-        summary_changed = has_summary and (
-            not fields_changed or any(
-                f in fields_changed for f in ("summary", "title", "custom_title")
+        with tracer.start_as_current_span("post_dispatcher.dispatch", context=parent_ctx) as span:
+            post_id = event["post_id"]
+            post_table = event["post_table"]
+            span.set_attribute("post_id", post_id)
+            span.set_attribute("post_table", post_table)
+
+            fields_changed: list[str] = event.get("fields_changed", [])
+            has_summary: bool = event.get("has_summary", False)
+
+            body_changed = not fields_changed or any(
+                f in fields_changed for f in ("body_text", "custom_body")
             )
-        )
+            title_changed = not fields_changed or any(
+                f in fields_changed for f in ("title", "custom_title")
+            )
+            summary_changed = has_summary and (
+                not fields_changed or any(
+                    f in fields_changed for f in ("summary", "title", "custom_title")
+                )
+            )
 
-        route = TASK_ROUTES["chunk"]
-        await self._route_tasks(exchange, event, post_id, post_table, body_changed, title_changed, summary_changed, route)
+            # Stamp THIS dispatcher span's context onto each task.
+            # Falls back to event["trace_id"] when OTEL is disabled (no active span),
+            # so trace_id is never silently dropped during propagation.
+            trace_id, parent_span_id = propagate_trace(event.get("trace_id"))
 
-    async def _route_tasks(self, exchange, event, post_id, post_table, body_changed, title_changed, summary_changed, route):
+            route = TASK_ROUTES["chunk"]
+            await self._route_tasks(
+                exchange, event, post_id, post_table,
+                body_changed, title_changed, summary_changed,
+                route, trace_id, parent_span_id,
+            )
+
+    async def _route_tasks(
+        self, exchange, event, post_id, post_table,
+        body_changed, title_changed, summary_changed,
+        route, trace_id: str | None, parent_span_id: str | None,
+    ):
         if body_changed:
             task = ChunkTask(
                 task_type="body",
@@ -90,7 +116,8 @@ class PostDispatcher:
                 post_table=post_table,
                 embed_model=EMBED_CONFIGS["body"].model,
                 source_event_id=event.get("event_id"),
-                trace_id=event.get("trace_id"),
+                trace_id=trace_id,
+                parent_span_id=parent_span_id,
             )
             await exchange.publish(
                 aio_pika.Message(task.model_dump_json().encode()),
@@ -105,7 +132,8 @@ class PostDispatcher:
                 post_table=post_table,
                 embed_model=EMBED_CONFIGS["title"].model,
                 source_event_id=event.get("event_id"),
-                trace_id=event.get("trace_id"),
+                trace_id=trace_id,
+                parent_span_id=parent_span_id,
             )
             await exchange.publish(
                 aio_pika.Message(task.model_dump_json().encode()),
@@ -120,7 +148,8 @@ class PostDispatcher:
                 post_table=post_table,
                 embed_model=EMBED_CONFIGS["summary_title"].model,
                 source_event_id=event.get("event_id"),
-                trace_id=event.get("trace_id"),
+                trace_id=trace_id,
+                parent_span_id=parent_span_id,
             )
             await exchange.publish(
                 aio_pika.Message(task.model_dump_json().encode()),

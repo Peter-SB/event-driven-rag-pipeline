@@ -19,6 +19,7 @@ from typing import Any
 import asyncpg
 
 from event_driven_rag_service.config.settings import settings
+from event_driven_rag_service.infrastructure.observability import setup_observability
 from event_driven_rag_service.config.embedding_config import EMBED_CONFIGS
 from event_driven_rag_service.infrastructure.event_bus import create_event_bus, PostgresEventBus
 from event_driven_rag_service.repository.chunk_repository import ChunkRepository
@@ -26,12 +27,10 @@ from event_driven_rag_service.repository.search_job_repository import SearchJobR
 from event_driven_rag_service.worker.gpu_worker import GpuEmbedWorker
 from event_driven_rag_service.handlers.embed_handler import EmbedHandler
 
-logger = logging.getLogger(__name__)
+# Replace logging.basicConfig() — routes all stdlib logging.getLogger() calls through structlog.
+setup_observability("rag-gpu-worker")
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------

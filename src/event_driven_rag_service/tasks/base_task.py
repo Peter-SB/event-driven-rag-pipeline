@@ -23,6 +23,10 @@ class BaseTask(BaseModel):
     kind: str  # Literal value overridden by each subclass
 
     # Distributed tracing — propagated from the triggering event so the full
-    # chain (event → task → new event) can be reconstructed in logs.
+    # chain (event → task → new event) can be reconstructed in logs and traces.
+    # trace_id: 32-char hex, shared across the whole pipeline for one user action.
+    # parent_span_id: 16-char hex span ID of the dispatcher span that published this task.
+    #   Workers pass this to extract_trace_context() to create child spans.
     trace_id: Optional[str] = None
+    parent_span_id: Optional[str] = None
     source_event_id: Optional[str] = None  # event_id of the event that triggered this task
