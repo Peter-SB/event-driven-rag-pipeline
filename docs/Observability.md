@@ -272,6 +272,7 @@ exported, used only to set the `parentSpanId` field on the new real span.
 | `OTEL_ENABLED` | `false` | `true` activates OTLP export + JSON logs |
 | `OTEL_SERVICE_NAME` | `rag-pipeline` | Service label in Tempo/Grafana (set per-container in docker-compose) |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | OTLP gRPC collector endpoint |
+| `OTEL_SPAN_PROCESSOR` | `simple` | `batch` for production (async export, no handler blocking); `simple` for local debugging (synchronous, spans available immediately) |
 
 ---
 

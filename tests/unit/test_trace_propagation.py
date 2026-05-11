@@ -262,3 +262,46 @@ async def test_traced_decorator_propagates_exceptions(otel_exporter):
     # The span is still recorded even when the function raises.
     spans = otel_exporter.get_finished_spans()
     assert any(s.name == "failing_op" for s in spans)
+
+
+# ---------------------------------------------------------------------------
+# propagate_trace
+# ---------------------------------------------------------------------------
+
+def test_propagate_trace_returns_span_ids_when_span_is_active(otel_exporter):
+    """Inside an active span, propagate_trace returns the span's own ids (ignores fallback)."""
+    from event_driven_rag_service.utils.tracing_utils import propagate_trace
+
+    tracer = _get_tracer()
+    with tracer.start_as_current_span("carrier_span"):
+        trace_id, span_id = propagate_trace("fallback-trace-id")
+
+    # Should be the span's own IDs, not the fallback string.
+    assert trace_id is not None
+    assert span_id is not None
+    assert len(trace_id) == 32
+    assert len(span_id) == 16
+    assert trace_id != "fallback-trace-id"
+
+
+def test_propagate_trace_falls_back_when_no_span_is_active():
+    """Outside a span (OTEL disabled scenario), propagate_trace preserves the incoming trace_id."""
+    from event_driven_rag_service.utils.tracing_utils import propagate_trace
+
+    fallback = "a" * 32
+    trace_id, span_id = propagate_trace(fallback)
+
+    # No active span → fall back to the provided trace_id, no parent_span_id.
+    assert trace_id == fallback
+    assert span_id is None
+
+
+def test_propagate_trace_returns_none_when_no_span_and_no_fallback():
+    """When OTEL is off and no incoming trace_id exists, both values are None."""
+    from event_driven_rag_service.utils.tracing_utils import propagate_trace
+
+    trace_id, span_id = propagate_trace(None)
+
+    assert trace_id is None
+    assert span_id is None
+

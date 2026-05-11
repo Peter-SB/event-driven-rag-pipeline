@@ -15,7 +15,10 @@ from typing import Any
 
 from opentelemetry import metrics
 
-# Lazy metric cache — created on first access, not at import time
+# Lazy metric cache — created on first access, not at import time.
+# CPython's GIL makes the check-then-set pattern safe under threading; asyncio
+# (single-threaded event loop) is also safe.  If this ever moves to a
+# multi-threaded worker model, wrap mutations in a threading.Lock.
 _metrics_cache: dict[str, Any] = {}
 
 

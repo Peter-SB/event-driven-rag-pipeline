@@ -280,7 +280,7 @@ services:
 
   # ─── Tempo (Distributed Tracing) ──────────────────────────────────────────
   tempo:
-    image: grafana/tempo:2.6.1
+    image: grafana/tempo:latest
     container_name: rag-tempo
     restart: unless-stopped
     # profiles: [observability]

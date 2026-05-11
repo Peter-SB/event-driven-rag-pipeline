@@ -132,7 +132,13 @@ class EmbedHandler:
         start_time = time.time()
 
         # Use the first task's trace context as the parent span.
-        # All tasks in a batch share the same trace_id (they came from the same event).
+        # In the common case all tasks in a batch originate from the same
+        # dispatcher event and therefore share one trace_id.  When the GPU
+        # worker happens to batch tasks from *different* API requests (unlikely
+        # in practice — tasks are queued per-post), the embed_chunks span is
+        # attributed to the first request's trace only.  This is an accepted
+        # trade-off for batch processing: a single span representing N requests
+        # is a better signal than N tiny spans with duplicated model/latency data.
         first = tasks[0] if tasks else None
         parent_ctx = extract_trace_context(
             first.trace_id if first else None,

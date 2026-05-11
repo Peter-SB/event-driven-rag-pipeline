@@ -75,6 +75,7 @@ import logging
 from typing import Any
 
 import structlog
+from opentelemetry import trace as _otel_trace
 
 
 # ---------------------------------------------------------------------------
@@ -135,9 +136,7 @@ def _inject_otel_context(
       span_id  → 16 hex chars (64-bit)
     These formats match what Tempo, Loki, and most log aggregators expect.
     """
-    from opentelemetry import trace
-
-    span = trace.get_current_span()
+    span = _otel_trace.get_current_span()
     ctx = span.get_span_context()
     if ctx.is_valid:
         event_dict["trace_id"] = format(ctx.trace_id, "032x")
