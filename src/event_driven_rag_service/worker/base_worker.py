@@ -33,6 +33,8 @@ import pika
 import pika.exceptions
 from pika.adapters.blocking_connection import BlockingChannel
 
+from event_driven_rag_service.infrastructure.metrics import record_dlq_routed
+
 logger = logging.getLogger(__name__)
 
 
@@ -185,6 +187,7 @@ class BaseWorker:
                 self.__class__.__name__,
                 method.delivery_tag,
             )
+            record_dlq_routed(self._queue_name)
             channel.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
 
     def process(self, payload: dict) -> None:

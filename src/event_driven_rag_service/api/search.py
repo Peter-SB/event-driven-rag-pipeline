@@ -19,13 +19,19 @@ import re
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Request, status
+from opentelemetry import trace
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from event_driven_rag_service.config.embedding_config import EMBED_CONFIGS
 from event_driven_rag_service.events.search_events import SearchJobCreatedEvent
 from event_driven_rag_service.infrastructure.event_bus import EventBusBase
+from event_driven_rag_service.infrastructure.metrics import (
+    record_search_job_created,
+    record_failure,
+)
 from event_driven_rag_service.repository.search_job_repository import SearchJobRepository
 from event_driven_rag_service.utils.build_table_names import build_chunk_table_name
+from event_driven_rag_service.utils.tracing_utils import current_trace_ids
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/search", tags=["search"])
@@ -92,32 +98,52 @@ class SearchStatusResponse(BaseModel):
 )
 async def create_search(req: SearchRequest, request: Request) -> SearchJobResponse:
     """Create an async vector search job. Returns job_id to poll for results."""
-    job_repo: SearchJobRepository = request.app.state.search_job_repo
-    event_bus: EventBusBase = request.app.state.event_bus
+    tracer = trace.get_tracer(__name__)
+    with tracer.start_as_current_span("create_search") as span:
+        span.set_attribute("library_id", req.library_id)
+        span.set_attribute("chunk_type", req.chunk_type)
+        span.set_attribute("k", req.k)
 
-    embed_cfg = EMBED_CONFIGS[req.chunk_type]
-    posts_table = f"posts_{req.library_id}"
-    chunks_table = build_chunk_table_name(posts_table, req.chunk_type, embed_cfg.model)
+        # Stamp this span's context into the outgoing event so the search
+        # pipeline (SearchDispatcher → EmbedHandler → SearchHandler) can
+        # create child spans under this root.
+        trace_id, parent_span_id = current_trace_ids()
 
-    job_id = await job_repo.create_job(
-        query=req.query,
-        k=req.k,
-        embedding_profile=embed_cfg.model,
-        chunks_table=chunks_table,
-        library_id=req.library_id,
-    )
+        job_repo: SearchJobRepository = request.app.state.search_job_repo
+        event_bus: EventBusBase = request.app.state.event_bus
 
-    event = SearchJobCreatedEvent(
-        query_job_id=job_id,
-        query=req.query,
-    )
-    await event_bus.publish(event.event_type, event.to_dict())
+        embed_cfg = EMBED_CONFIGS[req.chunk_type]
+        posts_table = f"posts_{req.library_id}"
+        chunks_table = build_chunk_table_name(posts_table, req.chunk_type, embed_cfg.model)
 
-    logger.info(
-        "create_search: job_id=%s query=%r chunk_type=%s library=%s k=%d",
-        job_id, req.query, req.chunk_type, req.library_id, req.k,
-    )
-    return SearchJobResponse(job_id=job_id)
+        try:
+            job_id = await job_repo.create_job(
+                query=req.query,
+                k=req.k,
+                embedding_profile=embed_cfg.model,
+                chunks_table=chunks_table,
+                library_id=req.library_id,
+            )
+        except Exception:
+            record_failure("storage_failed", "api")
+            raise
+
+        event = SearchJobCreatedEvent(
+            query_job_id=job_id,
+            query=req.query,
+            trace_id=trace_id,
+            parent_span_id=parent_span_id,
+        )
+        await event_bus.publish(event.event_type, event.to_dict())
+
+        record_search_job_created()
+        span.set_attribute("job_id", job_id)
+
+        logger.info(
+            "create_search: job_id=%s query=%r chunk_type=%s library=%s k=%d",
+            job_id, req.query, req.chunk_type, req.library_id, req.k,
+        )
+        return SearchJobResponse(job_id=job_id)
 
 
 @router.get(

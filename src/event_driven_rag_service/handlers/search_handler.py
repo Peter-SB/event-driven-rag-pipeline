@@ -14,11 +14,20 @@ implementations and in-memory fakes are both accepted.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Dict, List, Protocol
+
+from opentelemetry import trace
 
 from event_driven_rag_service.events.search_events import SearchJobCompletedEvent
 from event_driven_rag_service.infrastructure.event_bus import EventBusBase
+from event_driven_rag_service.infrastructure.metrics import (
+    record_search_job_completed,
+    record_search_latency,
+    record_failure,
+)
 from event_driven_rag_service.tasks.search_tasks import SearchRunTask
+from event_driven_rag_service.utils.tracing_utils import extract_trace_context
 
 logger = logging.getLogger(__name__)
 
@@ -69,50 +78,67 @@ class SearchHandler:
 
         Raises on unexpected errors so CpuSearchWorker can nack to DLQ.
         """
-        job = await self._jobs.get_job(task.job_id)
-        if not job:
-            logger.warning("SearchHandler: job %s not found — skipping", task.job_id)
-            return
+        parent_ctx = extract_trace_context(task.trace_id, task.parent_span_id)
+        tracer = trace.get_tracer(__name__)
+        start_time = time.time()
 
-        embedding = job.get("embedding")
-        if not embedding:
-            msg = f"Job {task.job_id} has no embedding stored — cannot search"
-            logger.error("SearchHandler: %s", msg)
-            await self._jobs.fail_job(task.job_id, msg)
-            return
+        with tracer.start_as_current_span("search_run", context=parent_ctx) as span:
+            span.set_attribute("job_id", task.job_id)
 
-        await self._jobs.mark_searching(task.job_id)
+            job = await self._jobs.get_job(task.job_id)
+            if not job:
+                logger.warning("SearchHandler: job %s not found — skipping", task.job_id)
+                span.set_attribute("skipped_reason", "job_not_found")
+                return
 
-        try:
-            raw = await self._chunks.search_nearest(
-                job["chunks_table"], embedding, job["k"]
-            )
-            results = [
-                {
-                    "chunk_id": row["id"],
-                    "post_id": row["post_id"],
-                    "text": row["text"],
-                    "metadata": row.get("metadata"),
-                    "score": row["score"],
-                }
-                for row in raw
-            ]
-            await self._jobs.complete_job(task.job_id, results)
+            embedding = job.get("embedding")
+            if not embedding:
+                msg = f"Job {task.job_id} has no embedding stored — cannot search"
+                logger.error("SearchHandler: %s", msg)
+                await self._jobs.fail_job(task.job_id, msg)
+                record_search_job_completed("failed")
+                record_failure("storage_failed", "cpu-worker")
+                span.set_attribute("skipped_reason", "no_embedding")
+                return
 
-            event = SearchJobCompletedEvent(
-                query_job_id=task.job_id,
-                trace_id=task.trace_id,
-            )
-            await self._event_log.publish(event.event_type, event.to_dict())
+            await self._jobs.mark_searching(task.job_id)
 
-            logger.info(
-                "SearchHandler: job %s complete — %d results from %s",
-                task.job_id,
-                len(results),
-                job["chunks_table"],
-            )
+            try:
+                raw = await self._chunks.search_nearest(
+                    job["chunks_table"], embedding, job["k"]
+                )
+                results = [
+                    {
+                        "chunk_id": row["id"],
+                        "post_id": row["post_id"],
+                        "text": row["text"],
+                        "metadata": row.get("metadata"),
+                        "score": row["score"],
+                    }
+                    for row in raw
+                ]
+                await self._jobs.complete_job(task.job_id, results)
 
-        except Exception as exc:
-            logger.exception("SearchHandler: job %s failed", task.job_id)
-            await self._jobs.fail_job(task.job_id, str(exc))
-            raise
+                event = SearchJobCompletedEvent(
+                    query_job_id=task.job_id,
+                    trace_id=task.trace_id,
+                )
+                await self._event_log.publish(event.event_type, event.to_dict())
+
+                span.set_attribute("result_count", len(results))
+                record_search_job_completed("completed")
+                record_search_latency(time.time() - start_time)
+
+                logger.info(
+                    "SearchHandler: job %s complete — %d results from %s",
+                    task.job_id,
+                    len(results),
+                    job["chunks_table"],
+                )
+
+            except Exception as exc:
+                logger.exception("SearchHandler: job %s failed", task.job_id)
+                await self._jobs.fail_job(task.job_id, str(exc))
+                record_search_job_completed("failed")
+                record_failure("encode_failed", "cpu-worker")
+                raise

@@ -7,6 +7,7 @@ Single responsibility: translate chunk-ready events into embedding tasks.
 No work is done here.
 """
 import logging
+from datetime import datetime, UTC
 
 import aio_pika
 from opentelemetry import trace
@@ -14,11 +15,24 @@ from opentelemetry import trace
 from event_driven_rag_service.config import consumer_groups
 from event_driven_rag_service.config.embedding_config import EMBED_CONFIGS
 from event_driven_rag_service.infrastructure.event_bus import EventBusBase
+from event_driven_rag_service.infrastructure.metrics import set_queue_lag
 from event_driven_rag_service.tasks.embed_task import EmbedTask
 from event_driven_rag_service.tasks.registry import TASK_ROUTES
 from event_driven_rag_service.utils.tracing_utils import extract_trace_context, propagate_trace
 
 logger = logging.getLogger(__name__)
+
+
+def _record_queue_lag(event: dict, queue_name: str) -> None:
+    """Record how long this event sat in the event log before being dispatched."""
+    raw = event.get("occurred_at")
+    if raw:
+        try:
+            occurred = datetime.fromisoformat(raw)
+            lag = (datetime.now(UTC) - occurred).total_seconds()
+            set_queue_lag(max(lag, 0.0), queue_name)
+        except (ValueError, TypeError):
+            pass
 
 
 class ChunkDispatcher:
@@ -45,6 +59,7 @@ class ChunkDispatcher:
             "chunks.created", consumer_group=consumer_groups.CHUNKS_CREATED
         ):
             try:
+                _record_queue_lag(event, "embed")
                 await self._dispatch_embedding(exchange, route, event)
             except Exception:
                 logger.exception(

@@ -125,6 +125,33 @@ def _chunks_deduplicated_total():
     )
 
 
+def _search_jobs_total():
+    return _get_or_create_metric(
+        "rag_search_jobs_total",
+        "counter",
+        description="Total search jobs by lifecycle status",
+        unit="1",
+    )
+
+
+def _search_latency_seconds():
+    return _get_or_create_metric(
+        "rag_search_latency_seconds",
+        "histogram",
+        description="Time from search job creation to results stored",
+        unit="s",
+    )
+
+
+def _dlq_messages_total():
+    return _get_or_create_metric(
+        "rag_dlq_messages_total",
+        "counter",
+        description="Total messages routed to the dead-letter queue after processing failure",
+        unit="1",
+    )
+
+
 def record_posts_processed(count: int, status: str = "success") -> None:
     """Record posts received by the API.
 
@@ -187,4 +214,30 @@ def set_queue_lag(lag_seconds: float | None, queue_name: str = "chunk") -> None:
     lag_seconds: None means queue is empty.
     """
     if lag_seconds is not None:
-        _queue_lag_seconds().record(lag_seconds, {"queue": queue_name})
+        _queue_lag_seconds().set(lag_seconds, {"queue": queue_name})
+
+
+def record_search_job_created() -> None:
+    """Record a search job accepted by the API."""
+    _search_jobs_total().add(1, {"status": "created"})
+
+
+def record_search_job_completed(status: str = "completed") -> None:
+    """Record a search job terminal outcome.
+
+    status: 'completed' | 'failed'
+    """
+    _search_jobs_total().add(1, {"status": status})
+
+
+def record_search_latency(latency_seconds: float) -> None:
+    """Record end-to-end search handler latency (job received → results stored)."""
+    _search_latency_seconds().record(latency_seconds)
+
+
+def record_dlq_routed(queue_name: str) -> None:
+    """Record a message nacked to the dead-letter queue.
+
+    queue_name: the RabbitMQ queue the message was originally consumed from.
+    """
+    _dlq_messages_total().add(1, {"queue": queue_name})
