@@ -1,9 +1,7 @@
 """
-Observability bootstrap for all pipeline services — Phase 1: Foundation.
+Observability bootstrap for all pipeline services.
 
-Implements the "three pillars" (logs, metrics, traces) foundation using
-OpenTelemetry + structlog.  Phase 1 focuses on structured logging and SDK
-wiring.  Actual span creation and metrics come in Phase 2+.
+Implements the "three pillars" (logs, metrics, traces) using OpenTelemetry + structlog.
 
 --------------------------------------------------------------------------------
 DESIGN PRINCIPLE: "Instrumentation is cheap. Exporting is expensive."
@@ -18,18 +16,50 @@ When OTEL_ENABLED=false (the default):
   - No network connections, no background threads, no collector required
 
 When OTEL_ENABLED=true:
-  - structlog renders JSON so log aggregators (Loki, ELK, Datadog) can parse it
+  - structlog renders JSON so log aggregators (Loki) can parse it
   - A real TracerProvider is registered globally with a BatchSpanProcessor
   - Every log record gains trace_id + span_id from the active OTEL span
-  - Spans are exported via OTLP gRPC to the configured collector endpoint
+  - Traces and metrics export via OTLP gRPC to the configured collector endpoint
 
 --------------------------------------------------------------------------------
-WHY structlog OVER plain logging?
+LOG APPROACH: stdout → Grafana Alloy → Loki
 --------------------------------------------------------------------------------
-Python's stdlib logging produces unstructured text.  Parsing that text in a
-log aggregator requires fragile regex.  structlog produces a Python dict first
-and renders it last — JSON output is a one-line config change, not a rewrite.
-It also integrates cleanly with OTEL by acting as a processor in the chain.
+Logs are written to stdout only.  Grafana Alloy (the log shipper) scrapes Docker
+container stdout and pushes structured JSON to Loki.  This is the standard,
+battle-tested container logging pattern and has several advantages over shipping
+logs through the OTEL pipeline:
+
+  Crash resistance: if the OTEL collector goes down, logs still land on stdout
+    and remain readable via `docker compose logs`.  OTLP log export has no
+    fallback — a collector outage silently drops records that were never
+    written anywhere else.
+
+  Simplicity: zero application code changes.  structlog already writes structured
+    JSON to stdout.  The agent handles discovery, buffering, retries, and label
+    enrichment outside the application process.
+
+  Standard: stdout/stderr is the universal logging contract for containers (the
+    12-factor app standard).  Every log aggregation system supports it.  OTLP
+    log export is newer and not yet universally supported, particularly in older
+    or managed infrastructure.
+
+  Separation of concerns: log shipping is an infrastructure concern, not an
+    application concern.  Keeping it in an agent layer means the log backend
+    (Loki → Elasticsearch → CloudWatch) can change without touching code.
+
+WHY GRAFANA ALLOY over Fluentd / Fluentbit / Logstash:
+  Alloy is Grafana's own collector agent — the successor to Promtail, Grafana
+  Agent, and Grafana Agent Flow, unified into a single binary.  It is a
+  first-class citizen in the LGTM stack: it speaks native Loki push format,
+  has built-in OTEL receiver support, and its River HCL config language is
+  purpose-built for pipeline composition.
+
+  Fluentd and Fluentbit are excellent general-purpose shippers but are
+  vendor-neutral — Loki integration requires community plugins and non-trivial
+  config.  Logstash is JVM-based and optimised for Elasticsearch.  For a
+  Grafana stack on a homelab, Alloy is the right tool: maintained by the same
+  team as Loki and Grafana, lighter than Logstash, and simpler to configure
+  for LGTM than Fluentbit.
 
 --------------------------------------------------------------------------------
 WHY route stdlib logging THROUGH structlog?
@@ -52,8 +82,6 @@ import structlog
 # ---------------------------------------------------------------------------
 
 # Guard against setup_observability being called more than once per process.
-# This can happen when OTEL SDK imports (grpc, exporter internals) have side
-# effects that trigger set_tracer_provider() via the SDK's auto-detection path.
 _observability_configured: bool = False
 
 
@@ -97,21 +125,15 @@ def _inject_otel_context(
 ) -> dict:
     """Structlog processor: add trace_id + span_id from the active OTEL span.
 
-    LEARNING NOTE — why always register this, even when OTEL is disabled:
-    -----------------------------------------------------------------------
-    This processor is in the chain regardless of OTEL_ENABLED.  When no span
-    is active, `span.get_span_context().is_valid` is False, so it's a pure
-    no-op.  When Phase 2 adds span creation, every log emitted *inside* a
-    span automatically inherits the trace context — developers get correlation
-    for free without touching individual log call sites.
-
-    This is the "ambient context" pattern from distributed tracing: context
-    flows with the thread/coroutine, not as explicit function arguments.
+    This processor is always registered, even when OTEL is disabled.  When no
+    span is active, `span.get_span_context().is_valid` is False, so it's a
+    pure no-op.  Inside a span, every log record automatically inherits the
+    trace context — no changes needed at log call sites.
 
     Format: W3C TraceContext hex strings
       trace_id → 32 hex chars (128-bit)
       span_id  → 16 hex chars (64-bit)
-    These formats match what Jaeger, Tempo, and most log aggregators expect.
+    These formats match what Tempo, Loki, and most log aggregators expect.
     """
     from opentelemetry import trace
 
@@ -136,32 +158,33 @@ def _configure_logging(otel_enabled: bool, service_name: str) -> None:
 
     1. Native structlog:   log = structlog.get_logger(); log.info("event", k=v)
        → processed by structlog.configure(processors=[...])
+       → written directly to stdout via PrintLoggerFactory
 
     2. Stdlib logging:     logging.getLogger(__name__).info("msg %s", x)
        → intercepted by ProcessorFormatter, processed by foreign_pre_chain + processors
+       → written to stdout via StreamHandler
 
     We define the same shared_processors for both paths so JSON output is
-    identical regardless of which API the caller uses.
+    identical regardless of which API the caller uses.  Grafana Alloy reads both
+    from the same stdout stream and pushes them to Loki.
     """
     # Processors that every log record passes through (both call paths)
     shared_processors: list = [
         # merge_contextvars: copies fields bound via structlog.contextvars.bind_contextvars()
-        # into every log event.  Used in Phase 2+ to bind trace_id at span start so
-        # even log calls that predate the inject processor see it.
+        # into every log event — used to propagate trace_id at span start.
         structlog.contextvars.merge_contextvars,
         structlog.stdlib.add_log_level,          # "level": "info"
         structlog.stdlib.add_logger_name,        # "logger": "event_driven_rag_service.api.app"
         structlog.processors.TimeStamper(fmt="iso"),  # "timestamp": "2026-05-06T12:34:56.789Z"
-        _inject_otel_context,                    # "trace_id" + "span_id" (no-op until Phase 2)
+        _inject_otel_context,                    # "trace_id" + "span_id" when inside a span
     ]
 
     if otel_enabled:
-        # JSON renderer — what production log aggregators (Loki, CloudWatch, ELK) parse.
+        # JSON renderer — what Alloy parses and ships to Loki.
         # Each log line is a complete JSON object on a single line (NDJSON/JSONLines format).
         renderer: Any = structlog.processors.JSONRenderer()
     else:
-        # Human-readable, coloured output — great for `docker compose logs -f` in dev.
-        # ConsoleRenderer adds colour codes and aligns key=value pairs for readability.
+        # Human-readable, coloured output for `docker compose logs -f` in dev.
         renderer = structlog.dev.ConsoleRenderer()
 
     # --- Native structlog path ---
@@ -199,8 +222,6 @@ def _configure_logging(otel_enabled: bool, service_name: str) -> None:
     handler.setFormatter(formatter)
 
     # Replace ALL existing handlers on the root logger.
-    # This clears any prior basicConfig() call in the entrypoints — those will be
-    # removed from the entrypoints themselves, but this is a safety net.
     root = logging.getLogger()
     root.handlers.clear()
     root.addHandler(handler)
@@ -218,10 +239,13 @@ def _configure_logging(otel_enabled: bool, service_name: str) -> None:
 # ---------------------------------------------------------------------------
 
 def _configure_otel(service_name: str, otlp_endpoint: str) -> None:
-    """Configure a real TracerProvider with a BatchSpanProcessor → OTLP exporter.
+    """Configure TracerProvider and MeterProvider with OTLP gRPC export.
 
     Only called when OTEL_ENABLED=true.  All imports are lazy (inside this
     function) so the SDK packages are only needed when actually used.
+
+    Logs are intentionally NOT exported via OTLP — they go to stdout and are
+    collected by Grafana Alloy.  See module docstring for the rationale.
 
     LEARNING NOTE — BatchSpanProcessor vs SimpleSpanProcessor:
     ----------------------------------------------------------
@@ -230,17 +254,16 @@ def _configure_otel(service_name: str, otlp_endpoint: str) -> None:
     for production.
 
     BatchSpanProcessor collects spans in a buffer and exports them on a
-    background thread in batches.  This decouples your service's hot path
-    from export I/O.  If the collector is slow or temporarily unreachable,
-    spans queue up in memory (up to max_queue_size) rather than blocking
-    your handlers.
+    background thread in batches.  If the collector is slow or temporarily
+    unreachable, spans queue up in memory (up to max_queue_size) rather than
+    blocking your handlers.
 
     LEARNING NOTE — Resource:
     -------------------------
     A Resource is metadata attached to every span and metric from this
-    process.  SERVICE_NAME is the most important attribute — it's what
-    Jaeger uses to group traces by service.  In a Kubernetes deployment
-    you'd also add k8s.pod.name, k8s.namespace, deployment.environment, etc.
+    process.  SERVICE_NAME is the most important attribute — it is what
+    Tempo uses to group traces by service.  In a Kubernetes deployment
+    you would also add k8s.pod.name, k8s.namespace, deployment.environment, etc.
     via ResourceDetectors.
 
     LEARNING NOTE — insecure=True:
@@ -258,22 +281,14 @@ def _configure_otel(service_name: str, otlp_endpoint: str) -> None:
 
     # ── Traces ──────────────────────────────────────────────────────────────
     provider = TracerProvider(resource=resource)
-
-    # OTLP gRPC exporter — sends spans to the OTel Collector (or directly to Jaeger/Tempo).
+    # OTLP gRPC exporter — sends spans to the OTel Collector (which forwards to Tempo).
     # If the collector is unreachable on startup, the exporter logs a warning and retries
-    # in the background — it does NOT crash the service.  This is important for homelab
-    # where the collector might not start before the app.
+    # in the background — it does NOT crash the service.
     exporter = OTLPSpanExporter(endpoint=otlp_endpoint, insecure=True)
     provider.add_span_processor(BatchSpanProcessor(exporter))
-
-    # Register as the global TracerProvider.  After this call, any code anywhere in the
-    # process that calls `opentelemetry.trace.get_tracer(__name__)` gets a real tracer
-    # connected to this provider.  Before this call, they got a no-op tracer.
     trace.set_tracer_provider(provider)
 
     # ── Metrics ─────────────────────────────────────────────────────────────
-    # Without a real MeterProvider, every instrument in metrics.py is a no-op
-    # and nothing is exported to the OTel Collector / Prometheus.
     from opentelemetry import metrics
     from opentelemetry.sdk.metrics import MeterProvider
     from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
@@ -285,6 +300,5 @@ def _configure_otel(service_name: str, otlp_endpoint: str) -> None:
     meter_provider = MeterProvider(resource=resource, metric_readers=[metric_reader])
     metrics.set_meter_provider(meter_provider)
 
-    # Log via print (not structlog) during setup to avoid logger initialization issues
     print(f"[observability] OTEL SDK configured: service={service_name}, "
-          f"endpoint={otlp_endpoint}, sampler=always_on")
+          f"endpoint={otlp_endpoint}, signals=traces+metrics (logs->stdout->Alloy->Loki)")

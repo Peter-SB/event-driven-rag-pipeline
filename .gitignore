@@ -4,4 +4,4 @@ docs/notes/
 .pytest_cache/
 **/__pycache__/
 
-*.env
+*.env*

@@ -1,0 +1,68 @@
+# Grafana Datasources — all in one file so cross-UID references resolve correctly.
+# Grafana provisions alphabetically; splitting across files caused "data source not found"
+# errors when loki.yml and prometheus.yml referenced the tempo UID before tempo.yml ran.
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: true
+    jsonData:
+      timeInterval: 15s
+      exemplarTraceIdDestinations:
+        - name: trace_id
+          datasourceUid: tempo
+
+  - name: Tempo
+    uid: tempo
+    type: tempo
+    access: proxy
+    url: http://tempo:3200
+    isDefault: false
+    editable: true
+    jsonData:
+      tracesToLogsV2:
+        datasourceUid: loki
+        spanStartTimeShift: "-1m"
+        spanEndTimeShift: "1m"
+        tags:
+          - key: service.name
+            value: service
+        filterByTraceID: true
+        filterBySpanID: false
+        customQuery: false
+      tracesToMetrics:
+        datasourceUid: prometheus
+        tags:
+          - key: service.name
+            value: job
+        queries:
+          - name: Request rate
+            query: sum(rate(rag_posts_processed_total{$__tags}[5m]))
+      serviceMap:
+        datasourceUid: prometheus
+      nodeGraph:
+        enabled: true
+      lokiSearch:
+        datasourceUid: loki
+
+  - name: Loki
+    uid: loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    isDefault: false
+    editable: true
+    jsonData:
+      derivedFields:
+        - name: trace_id
+          matcherType: label
+          matcherExpression: trace_id
+          url: "${__value.raw}"
+          datasourceUid: tempo
+          urlDisplayLabel: "View Trace"

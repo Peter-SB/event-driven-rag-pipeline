@@ -1,179 +1,197 @@
 {
-  "dashboard": {
-    "id": null,
-    "uid": "rag-pipeline",
-    "title": "RAG Pipeline Observable Metrics",
-    "description": "System health, throughput, latency, and quality metrics for the event-driven RAG pipeline",
-    "tags": ["rag", "pipeline", "production"],
-    "timezone": "browser",
-    "schemaVersion": 38,
-    "version": 2,
-    "refresh": "10s",
-    "time": {
-      "from": "now-1h",
-      "to": "now"
+  "id": null,
+  "uid": "rag-pipeline",
+  "title": "RAG Pipeline Observable Metrics",
+  "description": "System health, throughput, latency, and quality metrics for the event-driven RAG pipeline",
+  "tags": ["rag", "pipeline", "production"],
+  "timezone": "browser",
+  "editable": true,
+  "schemaVersion": 38,
+  "version": 2,
+  "refresh": "10s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Posts Processed (per minute)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "rate(rag_posts_processed_total[1m]) * 60",
+          "refId": "A",
+          "legendFormat": "{{status}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "custom": { "lineWidth": 2 } }
+      }
     },
-    "panels": [
-      {
-        "id": 1,
-        "title": "Posts Processed (per minute)",
-        "type": "timeseries",
-        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
-        "targets": [
-          {
-            "expr": "rate(rag_posts_processed_total[1m]) * 60",
-            "refId": "A",
-            "legendFormat": "{{status}}"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": { "unit": "short", "custom": { "lineWidth": 2 } }
+    {
+      "id": 2,
+      "title": "Error Rate",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "rate(rag_failures_total[1m]) * 60",
+          "refId": "A",
+          "legendFormat": "{{failure_type}} / {{service}}"
         }
-      },
-      {
-        "id": 2,
-        "title": "Error Rate",
-        "type": "timeseries",
-        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
-        "targets": [
-          {
-            "expr": "rate(rag_failures_total[1m]) * 60",
-            "refId": "A",
-            "legendFormat": "{{failure_type}} / {{service}}"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": { "unit": "short", "color": { "fixedColor": "red", "mode": "fixed" }, "custom": { "lineWidth": 2 } }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "fixedColor": "red", "mode": "fixed" },
+          "custom": { "lineWidth": 2 }
         }
-      },
-      {
-        "id": 3,
-        "title": "Chunks Created (per minute)",
-        "type": "timeseries",
-        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
-        "targets": [
-          {
-            "expr": "rate(rag_chunks_created_total[1m]) * 60",
-            "refId": "A",
-            "legendFormat": "{{task_type}}"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": { "unit": "short", "custom": { "lineWidth": 2 } }
+      }
+    },
+    {
+      "id": 3,
+      "title": "Chunks Created (per minute)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "rate(rag_chunks_created_total[1m]) * 60",
+          "refId": "A",
+          "legendFormat": "{{task_type}}"
         }
-      },
-      {
-        "id": 4,
-        "title": "Chunk Deduplication Rate",
-        "type": "timeseries",
-        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
-        "targets": [
-          {
-            "expr": "rate(rag_chunks_deduplicated_total[1m]) * 60",
-            "refId": "A",
-            "legendFormat": "{{task_type}}"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": { "unit": "short", "custom": { "lineWidth": 2 } }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "custom": { "lineWidth": 2 } }
+      }
+    },
+    {
+      "id": 4,
+      "title": "Chunk Deduplication Rate",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "rate(rag_chunks_deduplicated_total[1m]) * 60",
+          "refId": "A",
+          "legendFormat": "{{task_type}}"
         }
-      },
-      {
-        "id": 5,
-        "title": "Pipeline Latency (API → Event)",
-        "type": "timeseries",
-        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
-        "targets": [
-          {
-            "expr": "histogram_quantile(0.95, rate(rag_pipeline_latency_seconds_bucket[1m]))",
-            "refId": "P95",
-            "legendFormat": "P95"
-          },
-          {
-            "expr": "histogram_quantile(0.99, rate(rag_pipeline_latency_seconds_bucket[1m]))",
-            "refId": "P99",
-            "legendFormat": "P99"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": { "unit": "s", "custom": { "lineWidth": 2 } }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "custom": { "lineWidth": 2 } }
+      }
+    },
+    {
+      "id": 5,
+      "title": "Pipeline Latency (API → Event)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(rag_pipeline_latency_seconds_bucket[1m])))",
+          "refId": "P95",
+          "legendFormat": "P95"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(rag_pipeline_latency_seconds_bucket[1m])))",
+          "refId": "P99",
+          "legendFormat": "P99"
         }
-      },
-      {
-        "id": 6,
-        "title": "Embeddings Generated (per minute)",
-        "type": "timeseries",
-        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
-        "targets": [
-          {
-            "expr": "rate(rag_embeddings_generated_total[1m]) * 60",
-            "refId": "A",
-            "legendFormat": "{{model}}"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": { "unit": "short", "custom": { "lineWidth": 2 } }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "s", "custom": { "lineWidth": 2 } }
+      }
+    },
+    {
+      "id": 6,
+      "title": "Embeddings Generated (per minute)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "rate(rag_embeddings_generated_total[1m]) * 60",
+          "refId": "A",
+          "legendFormat": "{{model}}"
         }
-      },
-      {
-        "id": 7,
-        "title": "Chunking Latency P95",
-        "type": "timeseries",
-        "gridPos": { "h": 8, "w": 8, "x": 0, "y": 24 },
-        "targets": [
-          {
-            "expr": "histogram_quantile(0.95, rate(rag_chunking_latency_seconds_bucket[1m]))",
-            "refId": "A",
-            "legendFormat": "{{task_type}}"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": { "unit": "s", "custom": { "lineWidth": 2 } }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "custom": { "lineWidth": 2 } }
+      }
+    },
+    {
+      "id": 7,
+      "title": "Chunking Latency P95",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 24 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum by (le, task_type) (rate(rag_chunking_latency_seconds_bucket[1m])))",
+          "refId": "A",
+          "legendFormat": "{{task_type}}"
         }
-      },
-      {
-        "id": 8,
-        "title": "Embedding Latency P95",
-        "type": "timeseries",
-        "gridPos": { "h": 8, "w": 8, "x": 8, "y": 24 },
-        "targets": [
-          {
-            "expr": "histogram_quantile(0.95, rate(rag_embedding_latency_seconds_bucket[1m]))",
-            "refId": "A",
-            "legendFormat": "{{model}}"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": { "unit": "s", "custom": { "lineWidth": 2 } }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "s", "custom": { "lineWidth": 2 } }
+      }
+    },
+    {
+      "id": 8,
+      "title": "Embedding Latency P95",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 24 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum by (le, model) (rate(rag_embedding_latency_seconds_bucket[1m])))",
+          "refId": "A",
+          "legendFormat": "{{model}}"
         }
-      },
-      {
-        "id": 9,
-        "title": "Success Rate (1m)",
-        "type": "stat",
-        "gridPos": { "h": 4, "w": 8, "x": 16, "y": 24 },
-        "targets": [
-          {
-            "expr": "sum(rate(rag_posts_processed_total{status=\"success\"}[1m])) / sum(rate(rag_posts_processed_total[1m]))",
-            "refId": "A",
-            "legendFormat": "Success %"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "percentunit",
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
-                { "color": "red", "value": null },
-                { "color": "yellow", "value": 0.9 },
-                { "color": "green", "value": 0.99 }
-              ]
-            }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "s", "custom": { "lineWidth": 2 } }
+      }
+    },
+    {
+      "id": 9,
+      "title": "Success Rate (1m)",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 8, "x": 16, "y": 24 },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(rag_posts_processed_total{status=\"success\"}[1m])) / clamp_min(sum(rate(rag_posts_processed_total[1m])), 0.0001)",
+          "refId": "A",
+          "legendFormat": "Success %"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 0.9 },
+              { "color": "green", "value": 0.99 }
+            ]
           }
         }
       }
-    ]
-  },
-  "overwrite": true
+    }
+  ]
 }

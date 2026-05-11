@@ -1,8 +1,9 @@
 # OpenTelemetry Collector Configuration
-# Receives traces + metrics from the RAG pipeline, exports to Jaeger + Prometheus
+# Receives traces and metrics from the RAG pipeline services.
+# Logs go stdout → Grafana Alloy → Loki (not through the collector).
+# Routes: traces → Tempo, metrics → Prometheus
 
 receivers:
-  # Receive traces and metrics from SDK via gRPC
   otlp:
     protocols:
       grpc:
@@ -11,44 +12,38 @@ receivers:
         endpoint: 0.0.0.0:4318
 
 processors:
-  # Batch processor: collect and send in batches for efficiency
   batch:
     send_batch_size: 100
     timeout: 10s
 
 exporters:
-  # Export traces to Jaeger via OTLP HTTP (port 4318 is Jaeger's OTLP HTTP endpoint)
-  otlphttp:
-    endpoint: http://jaeger:4318
+  # Traces → Tempo
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
 
-  # Export metrics to Prometheus
+  # Metrics → Prometheus (scraped by Prometheus on :9464)
   prometheus:
     endpoint: 0.0.0.0:9464
-    namespace: rag
     const_labels:
       env: homelab
 
-  # Debug exporter — logs all received data to stdout at INFO level.
-  # Shows: number of spans/metrics/log records per batch.
-  # Useful to confirm the collector is actually receiving telemetry from the SDK.
-  # Remove in production (generates a lot of log output at scale).
+  # Summary counts per batch — remove at scale
   debug:
     verbosity: basic
 
 service:
-  # Collector's own internal metrics/logging (not app's telemetry)
   telemetry:
     logs:
-      level: info
+      level: warn
 
   pipelines:
-    # Traces pipeline: OTLP → batch → Jaeger + debug log
     traces:
       receivers: [otlp]
       processors: [batch]
-      exporters: [otlphttp, debug]
+      exporters: [otlp/tempo, debug]
 
-    # Metrics pipeline: OTLP → batch → Prometheus + debug log
     metrics:
       receivers: [otlp]
       processors: [batch]

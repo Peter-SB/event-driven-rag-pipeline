@@ -11,6 +11,9 @@ volumes:
   rabbitmq_data:
   redpanda_data:
   prometheus_data:
+  grafana_data:
+  tempo_data:
+  loki_data:
 
 # Services
 services:
@@ -213,13 +216,18 @@ services:
     command: python -m event_driven_rag_service.worker.entrypoints.dispatcher
 
   # ═══════════════════════════════════════════════════════════════════════════
-  # Observability Stack (Traces + Metrics + Dashboards)
+  # Observability Stack — LGTM + OTEL Collector + Grafana Alloy
+  # profile: observability  (none of these start with a plain `docker compose up`)
   # ═══════════════════════════════════════════════════════════════════════════
-  # To enable: set OTEL_ENABLED=true
-  # Then access:
-  #   - Jaeger traces: http://localhost:16686
-  #   - Prometheus metrics: http://localhost:9090
-  #   - Grafana dashboards: http://localhost:3000
+  # Usage:
+  #   docker compose up                                    # pipeline only
+  #   OTEL_ENABLED=true docker compose --profile observability up
+  #
+  # Access:
+  #   - Grafana (traces + metrics + logs): http://localhost:3001  (admin/admin)
+  #   - Prometheus metrics:                http://localhost:9090
+  #   - Tempo HTTP API:                    http://localhost:3200
+  #   - Loki HTTP API:                     http://localhost:3100
   # ═══════════════════════════════════════════════════════════════════════════
 
   # ─── OpenTelemetry Collector ──────────────────────────────────────────────
@@ -227,33 +235,65 @@ services:
     image: otel/opentelemetry-collector-contrib:latest
     container_name: rag-otel-collector
     restart: unless-stopped
+    # profiles: [observability]
     command: [--config=/etc/otel-collector-config.yaml]
     volumes:
       - ./config/otel-collector-config.yaml:/etc/otel-collector-config.yaml
     ports:
       - "4317:4317"       # OTLP gRPC receiver (used by SDK)
       - "4318:4318"       # OTLP HTTP receiver
-      - "9411:9411"       # Zipkin receiver
     networks:
       - rag
     depends_on:
-      - jaeger
+      - tempo
 
-  # ─── Jaeger (Distributed Tracing) ─────────────────────────────────────────
-  jaeger:
-    image: jaegertracing/all-in-one:latest
-    container_name: rag-jaeger
+  # ─── Grafana Alloy (Log Shipper) ──────────────────────────────────────────
+  # Scrapes Docker container stdout logs, parses JSON, and pushes to Loki.
+  alloy:
+    image: grafana/alloy:latest
+    container_name: rag-alloy
     restart: unless-stopped
-    environment:
-      COLLECTOR_OTLP_ENABLED: "true"
+    # profiles: [observability]
+    command:
+      - run
+      - /etc/alloy/config.alloy
+      - --storage.path=/var/lib/alloy/data
+    volumes:
+      - ./config/alloy/config.alloy:/etc/alloy/config.alloy
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    networks:
+      - rag
+    depends_on:
+      - loki
+
+  # ─── Tempo (Distributed Tracing) ──────────────────────────────────────────
+  tempo:
+    image: grafana/tempo:2.6.1
+    container_name: rag-tempo
+    restart: unless-stopped
+    # profiles: [observability]
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./config/tempo.yaml:/etc/tempo.yaml
+      - tempo_data:/var/tempo
     ports:
-      - "6831:6831/udp"   # Jaeger agent (compact format)
-      - "6832:6832/udp"   # Jaeger agent (binary format)
-      - "5775:5775/udp"   # Jaeger agent (zipkin-compact)
-      - "5778:5778"       # Jaeger agent (HTTP)
-      - "14268:14268"     # Jaeger collector HTTP
-      - "14250:14250"     # Jaeger collector gRPC
-      - "16686:16686"     # Jaeger UI (access traces here)
+      - "3200:3200"       # Tempo HTTP API (Grafana queries here)
+    networks:
+      - rag
+
+  # ─── Loki (Log Storage) ───────────────────────────────────────────────────
+  loki:
+    image: grafana/loki:latest
+    container_name: rag-loki
+    restart: unless-stopped
+    # profiles: [observability]
+    command: ["-config.file=/etc/loki.yaml"]
+    volumes:
+      - ./config/loki.yaml:/etc/loki.yaml
+      - loki_data:/loki
+    ports:
+      - "3100:3100"
     networks:
       - rag
 
@@ -262,10 +302,12 @@ services:
     image: prom/prometheus:latest
     container_name: rag-prometheus
     restart: unless-stopped
+    # profiles: [observability]
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.path=/prometheus"
       - "--web.enable-lifecycle"
+      - "--web.enable-remote-write-receiver" # opens the /api/v1/write endpoint that Tempo pushes to
     volumes:
       - ./config/prometheus.yml:/etc/prometheus/prometheus.yml
       - prometheus_data:/prometheus
@@ -279,15 +321,24 @@ services:
     image: grafana/grafana:latest
     container_name: rag-grafana
     restart: unless-stopped
+    # profiles: [observability]
     environment:
       GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_PASSWORD:-admin}"
       GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_FEATURE_TOGGLES_ENABLE: "traceqlEditor tempoSearch tempoServiceGraph"
+      # Grafana 13 replaced the classic file provisioner with an apiserver-based one
+      # (provisioning=true feature flag). The new provisioner does not reliably load
+      # classic-schema dashboard JSON. Disabling it restores the legacy provisioner.
+      GF_FEATURE_TOGGLES_PROVISIONING: "false"
     volumes:
+      - grafana_data:/var/lib/grafana
       - ./config/grafana/dashboards:/etc/grafana/provisioning/dashboards
       - ./config/grafana/datasources:/etc/grafana/provisioning/datasources
     ports:
-      - "3000:3000"
+      - "3001:3000"
     networks:
       - rag
     depends_on:
       - prometheus
+      - tempo
+      - loki

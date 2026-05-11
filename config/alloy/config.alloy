@@ -1,0 +1,76 @@
+// Grafana Alloy configuration — scrapes Docker container stdout and ships to Loki.
+
+// ── Step 1: Discover all running Docker containers ───────────────────────────
+discovery.docker "containers" {
+  host             = "unix:///var/run/docker.sock"
+  refresh_interval = "5s"
+}
+
+// ── Step 2: Relabel discovered targets ───────────────────────────────────────
+// Extract useful labels from Docker metadata so Loki queries can filter
+// by service name and container name without scanning log content.
+discovery.relabel "containers" {
+  targets = discovery.docker.containers.targets
+
+  // Strip leading slash: "/rag-api" → "rag-api"
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "container"
+  }
+
+  // Use the compose service name (api, cpu-worker, dispatcher, …) as "service"
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    target_label  = "service"
+  }
+}
+
+// ── Step 3: Tail container log files ─────────────────────────────────────────
+loki.source.docker "containers" {
+  host             = "unix:///var/run/docker.sock"
+  targets          = discovery.relabel.containers.output
+  forward_to       = [loki.process.pipeline.receiver]
+  refresh_interval = "5s"
+}
+
+// ── Step 4: Parse and enrich log records ─────────────────────────────────────
+loki.process "pipeline" {
+
+  // Parse the JSON produced by structlog when OTEL_ENABLED=true.
+  // Falls back gracefully on plain-text lines (OTEL_ENABLED=false dev output).
+  stage.json {
+    expressions = {
+      level    = "level",
+      trace_id = "trace_id",
+    }
+  }
+
+  // Promote "level" as a Loki label for fast log-level filtering.
+  // Low cardinality: info / warning / error — safe as a label.
+  stage.labels {
+    values = {
+      level = "",
+    }
+  }
+
+  // Store trace_id as structured metadata rather than a label.
+  // Labels are indexed; trace_id is high-cardinality (one value per request)
+  // and would cause Prometheus-style cardinality explosion if made a label.
+  // Structured metadata is stored inline with the log line and lets Grafana
+  // render the "View Trace in Tempo" button without the cardinality cost.
+  stage.structured_metadata {
+    values = {
+      trace_id = "",
+    }
+  }
+
+  forward_to = [loki.write.loki_push.receiver]
+}
+
+// ── Step 5: Push to Loki ─────────────────────────────────────────────────────
+loki.write "loki_push" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}

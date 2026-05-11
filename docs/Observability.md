@@ -27,13 +27,17 @@ with timings.
 
 | Pillar | Question | Tool | Status |
 |--------|----------|------|--------|
-| **Logs** | What happened? | structlog | ✅ Phase 1 |
-| **Traces** | Where did time go? | OpenTelemetry | ✅ Phase 2 |
-| **Metrics** | Is the system healthy? | OTEL Metrics | Planned (Phase 3) |
+| **Logs** | What happened? | structlog → stdout → Alloy → Loki | ✅ Phase 1 + 4 |
+| **Traces** | Where did time go? | OpenTelemetry → Tempo | ✅ Phase 2 |
+| **Metrics** | Is the system healthy? | OTEL Metrics → Prometheus | ✅ Phase 3 |
 
 These are not substitutes.  Logs are for humans debugging a specific incident.
 Metrics are for alerting and dashboards.  Traces are for understanding latency
 distribution across service boundaries.
+
+Traces and metrics are visible in Grafana with correlation: click a Prometheus
+exemplar to jump directly to the Tempo trace that produced it.  Click any log
+line in Loki to jump to its Tempo trace via `trace_id`.
 
 ---
 
@@ -163,6 +167,51 @@ is the only acceptable choice for production.
 
 ---
 
+### 7. Logs go to stdout — Grafana Alloy ships them to Loki
+
+**The decision:** Logs are written to stdout only.  Grafana Alloy scrapes Docker
+container stdout and pushes structured JSON to Loki.
+OTLP log export is deliberately not used.
+
+**The reason:** stdout is the universal logging contract for containers (the
+12-factor app standard).  Keeping log shipping in a separate agent rather than
+the OTEL pipeline has concrete operational advantages:
+
+- **Crash resistance:** if the OTEL collector goes down, logs still land on
+  stdout and remain readable via `docker compose logs`.  OTLP log export has no
+  fallback — a collector outage silently drops records written nowhere else.
+- **Separation of concerns:** the log backend (Loki → Elasticsearch → CloudWatch)
+  can change without touching application code.
+- **Simplicity:** structlog already writes structured JSON to stdout when
+  `OTEL_ENABLED=true`.  No new SDK wiring, no new handler, no feedback-loop risk.
+
+//
+// WHY ALLOY for log shipping (vs OTLP log export from the app):
+//   stdout is the universal container logging contract (12-factor).  If the
+//   collector or Loki goes down, logs still land on stdout and are readable
+//   via `docker compose logs`.  OTLP log export has no such fallback.
+//   Alloy also adds label enrichment and pipeline processing outside the app.
+//
+// WHY ALLOY over Fluentd / Fluentbit / Logstash:
+//   Alloy is Grafana's own agent (successor to Promtail + Grafana Agent Flow).
+//   It speaks native Loki push format, requires no plugins for LGTM targets,
+//   and its River HCL pipeline model is the same conceptual model as the rest
+//   of the Grafana stack.  Fluentd/Fluentbit are vendor-neutral and need extra
+//   config to reach Loki; Logstash is JVM-based and Elasticsearch-oriented.
+
+**Why Grafana Alloy over Fluentd / Fluentbit / Logstash:**  
+Alloy is Grafana's own collector agent — the successor to Promtail, Grafana
+Agent, and Grafana Agent Flow, unified into a single binary.  It speaks native
+Loki push format, has built-in OTEL receiver support, and its River HCL config
+language is purpose-built for pipeline composition.
+
+Fluentd and Fluentbit are excellent vendor-neutral shippers but require community
+plugins and extra config to target Loki.  Logstash is JVM-based and optimised
+for Elasticsearch.  For a Grafana homelab stack, Alloy is the natural choice —
+maintained by the same team as Loki and Grafana.
+
+---
+
 ## Trace flow in this pipeline
 
 One HTTP request creates one root span.  Its `trace_id` and `span_id` flow
@@ -221,7 +270,7 @@ exported, used only to set the `parentSpanId` field on the new real span.
 | Variable | Default | Effect |
 |----------|---------|--------|
 | `OTEL_ENABLED` | `false` | `true` activates OTLP export + JSON logs |
-| `OTEL_SERVICE_NAME` | `rag-pipeline` | Service label in Jaeger (set per-container in docker-compose) |
+| `OTEL_SERVICE_NAME` | `rag-pipeline` | Service label in Tempo/Grafana (set per-container in docker-compose) |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | OTLP gRPC collector endpoint |
 
 ---
@@ -229,20 +278,24 @@ exported, used only to set the `parentSpanId` field on the new real span.
 ## Enabling observability
 
 ```bash
-# Default: structured console logs, no OTLP export
+# Default: pipeline only — no observability containers started
 docker compose up
 
-# Enable: JSON logs + OTLP export (collector must be running)
-OTEL_ENABLED=true docker compose up
-
-# Phase 4 (planned): start the full monitoring stack
+# Enable: pipeline + full LGTM stack (6 extra containers)
 OTEL_ENABLED=true docker compose --profile observability up
 ```
 
-With OTEL_ENABLED=true and the observability stack running:
-- Jaeger UI (traces): http://localhost:16686
-- Prometheus (metrics): http://localhost:9090
-- Grafana (dashboards): http://localhost:3000
+The `observability` Docker Compose profile gates all six observability containers
+(otel-collector, alloy, tempo, loki, prometheus, grafana).  A plain
+`docker compose up` runs the pipeline with zero observability overhead — no
+collector, no Grafana, no background exporters.
+
+With `OTEL_ENABLED=true --profile observability`:
+
+- Grafana (traces + metrics + logs): `http://localhost:3000` (admin/admin)
+- Prometheus (metrics): `http://localhost:9090`
+- Tempo HTTP API (traces): `http://localhost:3200`
+- Loki HTTP API (logs): `http://localhost:3100`
 
 ---
 
@@ -281,32 +334,39 @@ Prometheus cardinality explosion and memory exhaustion.
 
 ---
 
-## Phase 4: Observability stack — OTEL Collector, Prometheus, Grafana, Jaeger
+## Phase 4: Observability stack — LGTM (Loki + Grafana + Tempo + Prometheus)
 
 **Now implemented.** To use:
 
 ```bash
-# Start everything with observability enabled
 OTEL_ENABLED=true docker compose up
 ```
 
 The stack provides:
-- **OTEL Collector**: Receives OTLP gRPC from services, routes to Jaeger + Prometheus
-- **Jaeger**: Stores and visualizes traces (http://localhost:16686)
-- **Prometheus**: Scrapes metrics from collector exporter (http://localhost:9090)
-- **Grafana**: Dashboards with golden metrics (http://localhost:3000, admin/admin)
+
+- **OTEL Collector**: Receives OTLP gRPC from services, routes traces + metrics
+- **Grafana Alloy**: Scrapes Docker container stdout, parses JSON, pushes to Loki
+- **Tempo**: Stores traces; queried by Grafana at `http://localhost:3200`
+- **Loki**: Stores logs (shipped by Alloy); queried by Grafana at `http://localhost:3100`
+- **Prometheus**: Scrapes metrics from the OTEL Collector exporter (`http://localhost:9090`)
+- **Grafana**: All three pillars in one UI (`http://localhost:3000`, admin/admin)
 
 ### How the data flow works
 
 ```
-Service
-  ↓ OTLP gRPC (when OTEL_ENABLED=true)
-OTEL Collector
-  ├→ Traces → Jaeger (waterfall view)
-  └→ Metrics → Prometheus (time-series DB)
-        ↓
-    Grafana (dashboard queries)
+structlog / logging.getLogger()
+  ↓ stdout (always)                       ↓ OTLP gRPC (OTEL_ENABLED=true)
+Grafana Alloy → Loki                 OTEL Collector
+  (scrapes Docker stdout)              ├→ Traces  → Tempo
+                                       └→ Metrics → Prometheus
+                                             ↓
+                                         Grafana (datasources: Loki, Tempo, Prometheus)
 ```
+
+Grafana datasource correlation is fully wired:
+- Tempo trace span → "View Logs" jumps to Loki filtered by `trace_id`
+- Loki log line → "View Trace" opens the matching Tempo trace
+- Prometheus exemplar → links directly to its Tempo trace
 
 When `OTEL_ENABLED=false`, all OTLP export is disabled but instrumentation
 remains cheap — spans are created as `NonRecordingSpan` objects with zero overhead.
@@ -335,7 +395,7 @@ noise without adding actionable information at this stage.
 | **1** | structlog + OTEL SDK wiring | ✅ Done |
 | **2** | Trace propagation across all service boundaries | ✅ Done |
 | **3** | Golden metrics: counters, latency histograms, low-cardinality labels | ✅ Done |
-| **4** | Observability stack: Jaeger + Prometheus + Grafana (on-demand via docker-compose) | ✅ Done |
+| **4** | Observability stack: LGTM (Loki + Grafana + Tempo + Prometheus) with trace↔log↔metric correlation | ✅ Done |
 
 ---
 
