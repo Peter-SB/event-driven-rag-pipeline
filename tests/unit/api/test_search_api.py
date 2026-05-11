@@ -1,4 +1,4 @@
-"""Unit tests for POST /search and GET /search/{job_id} endpoints.
+﻿"""Unit tests for POST /search and GET /search/{job_id} endpoints.
 
 Uses a minimal FastAPI app with fakes — no real Postgres, no RabbitMQ,
 no lifespan.  Matches the pattern used by tests/unit/api/test_sync.py.
@@ -129,8 +129,8 @@ def test_create_search_stores_correct_job_params(client):
     job = repo.created[0]
     assert job["query"] == "deep learning"
     assert job["k"] == 7
-    assert job["chunks_table"] == "posts_work_chunks_body_bge_base_v1_5"
-    assert job["embedding_profile"] == "bge-base-v1.5"
+    assert job["chunks_table"] == "posts_work_chunks_body_baai_bge_base_en_v1_5"
+    assert job["embedding_profile"] == "BAAI/bge-base-en-v1.5"
 
 
 def test_create_search_invalid_chunk_type_returns_422(client):
@@ -187,8 +187,8 @@ def test_create_search_title_chunk_type_uses_correct_table(client):
     )
     repo: FakeSearchJobRepo = client.app.state.search_job_repo
     job = repo.created[0]
-    assert job["chunks_table"] == "posts_work_chunks_title_bge_small_en_v1_5"
-    assert job["embedding_profile"] == "bge-small-en-v1.5"
+    assert job["chunks_table"] == "posts_work_chunks_title_baai_bge_small_en_v1_5"
+    assert job["embedding_profile"] == "BAAI/bge-small-en-v1.5"
 
 
 # ---------------------------------------------------------------------------

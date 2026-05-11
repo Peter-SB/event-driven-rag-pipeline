@@ -1,4 +1,4 @@
-"""E2E test fixtures.
+﻿"""E2E test fixtures.
 
 Connects to a running Docker Compose stack via environment variables.
 All services must be up before these tests are invoked:
@@ -65,7 +65,7 @@ async def rmq_connection_e2e():
 
 _EMBED_QUEUES = [
     "cpu.chunk.post",
-    "gpu.embed.bge-base-v1.5",
+    "gpu.embed.bge-base-en-v1.5",
     "gpu.embed.bge-small-en-v1.5",
     "gpu.embed.qwen3-0.6b",
     "cpu.search.run",
@@ -79,7 +79,7 @@ async def _purge_queues(rmq_url: str) -> None:
         async with conn.channel() as ch:
             for q in _EMBED_QUEUES:
                 try:
-                    queue = await ch.declare_queue(q, passive=True)
+                    queue = await ch.declare_queue(q, passive=True) # todo: what what passive=True does if queue doesn't exist? 
                     await queue.purge()
                 except Exception:
                     pass  # Queue may not exist yet on first run
@@ -105,9 +105,9 @@ async def async_client(postgres_pool_e2e: asyncpg.Pool):
         await conn.execute("DELETE FROM consumer_offsets")
         await conn.execute("DELETE FROM event_log")
         await conn.execute("DROP TABLE IF EXISTS posts_e2e")
-        await conn.execute("DROP TABLE IF EXISTS posts_e2e_chunks_body_bge_base_v1_5")
-        await conn.execute("DROP TABLE IF EXISTS posts_e2e_chunks_title_bge_small_en_v1_5")
-        await conn.execute("DROP TABLE IF EXISTS posts_e2e_chunks_summary_title_bge_small_en_v1_5")
+        await conn.execute("DROP TABLE IF EXISTS posts_e2e_chunks_body_baai_bge_base_en_v1_5")
+        await conn.execute("DROP TABLE IF EXISTS posts_e2e_chunks_title_baai_bge_small_en_v1_5")
+        await conn.execute("DROP TABLE IF EXISTS posts_e2e_chunks_summary_title_qwen_qwen3_0_6b")
 
     async with httpx.AsyncClient(base_url=_API_BASE, timeout=30.0) as client:
         yield client
@@ -116,8 +116,8 @@ async def async_client(postgres_pool_e2e: asyncpg.Pool):
     await _purge_queues(_RABBITMQ_URL)
     async with postgres_pool_e2e.acquire() as conn:
         await conn.execute("DROP TABLE IF EXISTS posts_e2e")
-        await conn.execute("DROP TABLE IF EXISTS posts_e2e_chunks_body_bge_base_v1_5")
-        await conn.execute("DROP TABLE IF EXISTS posts_e2e_chunks_title_bge_small_en_v1_5")
-        await conn.execute("DROP TABLE IF EXISTS posts_e2e_chunks_summary_title_bge_small_en_v1_5")
+        await conn.execute("DROP TABLE IF EXISTS posts_e2e_chunks_body_baai_bge_base_en_v1_5")
+        await conn.execute("DROP TABLE IF EXISTS posts_e2e_chunks_title_baai_bge_small_en_v1_5")
+        await conn.execute("DROP TABLE IF EXISTS posts_e2e_chunks_summary_title_qwen_qwen3_0_6b")
         await conn.execute("DELETE FROM event_log")
         await conn.execute("DELETE FROM consumer_offsets")

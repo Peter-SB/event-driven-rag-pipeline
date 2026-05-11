@@ -33,6 +33,17 @@ dependencies = [
 
     # Utilities
     "python-dotenv>=1.0",
+
+    # Observability — always installed, exporters only activate when OTEL_ENABLED=true
+    # API package: zero-overhead no-op tracer/meter when SDK is not configured
+    "opentelemetry-api>=1.24",
+    # SDK package: real TracerProvider, BatchSpanProcessor, resource detection
+    "opentelemetry-sdk>=1.24",
+    # OTLP gRPC exporter: sends spans/metrics to an OTel Collector (or Jaeger direct)
+    "opentelemetry-exporter-otlp-proto-grpc>=1.24",
+    # Structured logging: replaces stdlib logging.basicConfig across all services
+    # Produces JSON when OTEL_ENABLED=true, human-readable console when false
+    "structlog>=24.0",
 ]
 
 [project.optional-dependencies]

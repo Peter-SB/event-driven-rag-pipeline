@@ -25,6 +25,7 @@ from typing import Any, Optional
 import asyncpg
 
 from event_driven_rag_service.data_models.chunk import Chunk
+from event_driven_rag_service.exceptions import ChunkTableNotFoundError
 
 logger = logging.getLogger(__name__)
 
@@ -175,11 +176,14 @@ class ChunkRepository:
         table_name = (table_name or self._table_name).lower()
         if self._vector_dim is not None:
             await self.ensure_table(table_name, self._vector_dim)
-        async with self._pool.acquire() as conn:
-            rows = await conn.fetch(
-                f"SELECT id, text FROM {table_name} WHERE id = ANY($1::uuid[])",
-                chunk_ids,
-            )
+        try:
+            async with self._pool.acquire() as conn:
+                rows = await conn.fetch(
+                    f"SELECT id, text FROM {table_name} WHERE id = ANY($1::uuid[])",
+                    chunk_ids,
+                )
+        except asyncpg.exceptions.UndefinedTableError:
+            raise ChunkTableNotFoundError(table_name)
         return [(str(row["id"]), row["text"]) for row in rows]
 
     # ------------------------------------------------------------------

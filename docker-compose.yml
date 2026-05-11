@@ -10,6 +10,11 @@ volumes:
   pg_data:
   rabbitmq_data:
   redpanda_data:
+  prometheus_data:
+  grafana_data:
+  tempo_data:
+  loki_data:
+  hf_model_cache:   # Persists HuggingFace model weights across container recreations
 
 # Services
 services:
@@ -46,15 +51,18 @@ services:
     ports:
       - "${RABBITMQ_PORT:-5672}:5672"
       - "${RABBITMQ_MGMT_PORT:-15672}:15672"   # Management UI
+      - "15692:15692"                           # Prometheus metrics
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
+      - ./config/rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
     networks:
       - rag
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "ping"]
-      interval: 10s
-      timeout: 10s
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
+      interval: 5s
+      timeout: 5s
       retries: 10
+      start_period: 15s  # Give RabbitMQ 15s to start before first healthcheck
 
   # ─── Redpanda (Kafka-compatible, single-node homelab) ────────────────────
   redpanda:
@@ -113,6 +121,11 @@ services:
       RABBITMQ_URL: "amqp://rag:rag@rabbitmq:5672/"
       REDPANDA_SERVERS: "redpanda:29092"
       EVENT_BUS: "${EVENT_BUS:-postgres}"
+      # Observability — off by default, no overhead.  Set OTEL_ENABLED=true to
+      # activate structured JSON logs + OTLP trace export.
+      OTEL_ENABLED: "${OTEL_ENABLED:-false}"
+      OTEL_SERVICE_NAME: "rag-api"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}"
     ports:
       - "${API_PORT:-8000}:8000"
     networks:
@@ -136,6 +149,9 @@ services:
       RABBITMQ_URL: "amqp://rag:rag@rabbitmq:5672/"
       REDPANDA_SERVERS: "redpanda:29092"
       EVENT_BUS: "${EVENT_BUS:-postgres}"
+      OTEL_ENABLED: "${OTEL_ENABLED:-false}"
+      OTEL_SERVICE_NAME: "rag-cpu-worker"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}"
     networks:
       - rag
     depends_on:
@@ -150,6 +166,12 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        # Pre-downloads all embedding models into the image layer at build time.
+        # Docker caches this layer until Python deps change, so rebuilds are fast.
+        # The hf_model_cache volume is then seeded from the image on first run and
+        # persists across docker compose up --force-recreate.
+        PREDOWNLOAD_MODELS: "true"
     container_name: rag-gpu-worker
     restart: unless-stopped
     environment:
@@ -158,6 +180,11 @@ services:
       REDPANDA_SERVERS: "redpanda:29092"
       EVENT_BUS: "${EVENT_BUS:-postgres}"
       MOCK_EMBEDDINGS: "${MOCK_EMBEDDINGS:-1}"
+      OTEL_ENABLED: "${OTEL_ENABLED:-false}"
+      OTEL_SERVICE_NAME: "rag-gpu-worker"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}"
+    volumes:
+      - hf_model_cache:/root/.cache/huggingface
     networks:
       - rag
     depends_on:
@@ -187,6 +214,9 @@ services:
       RABBITMQ_URL: "amqp://rag:rag@rabbitmq:5672/"
       REDPANDA_SERVERS: "redpanda:29092"
       EVENT_BUS: "${EVENT_BUS:-postgres}"
+      OTEL_ENABLED: "${OTEL_ENABLED:-false}"
+      OTEL_SERVICE_NAME: "rag-dispatcher"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}"
     networks:
       - rag
     depends_on:
@@ -195,3 +225,131 @@ services:
       rabbitmq:
         condition: service_healthy
     command: python -m event_driven_rag_service.worker.entrypoints.dispatcher
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Observability Stack — LGTM + OTEL Collector + Grafana Alloy
+  # profile: observability  (none of these start with a plain `docker compose up`)
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Usage:
+  #   docker compose up                                    # pipeline only
+  #   OTEL_ENABLED=true docker compose --profile observability up
+  #
+  # Access:
+  #   - Grafana (traces + metrics + logs): http://localhost:3001  (admin/admin)
+  #   - Prometheus metrics:                http://localhost:9090
+  #   - Tempo HTTP API:                    http://localhost:3200
+  #   - Loki HTTP API:                     http://localhost:3100
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # ─── OpenTelemetry Collector ──────────────────────────────────────────────
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    container_name: rag-otel-collector
+    restart: unless-stopped
+    # profiles: [observability]
+    command: [--config=/etc/otel-collector-config.yaml]
+    volumes:
+      - ./config/otel-collector-config.yaml:/etc/otel-collector-config.yaml
+    ports:
+      - "4317:4317"       # OTLP gRPC receiver (used by SDK)
+      - "4318:4318"       # OTLP HTTP receiver
+    networks:
+      - rag
+    depends_on:
+      - tempo
+
+  # ─── Grafana Alloy (Log Shipper) ──────────────────────────────────────────
+  # Scrapes Docker container stdout logs, parses JSON, and pushes to Loki.
+  alloy:
+    image: grafana/alloy:latest
+    container_name: rag-alloy
+    restart: unless-stopped
+    # profiles: [observability]
+    command:
+      - run
+      - /etc/alloy/config.alloy
+      - --storage.path=/var/lib/alloy/data
+    volumes:
+      - ./config/alloy/config.alloy:/etc/alloy/config.alloy
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    networks:
+      - rag
+    depends_on:
+      - loki
+
+  # ─── Tempo (Distributed Tracing) ──────────────────────────────────────────
+  tempo:
+    image: grafana/tempo:latest
+    container_name: rag-tempo
+    restart: unless-stopped
+    # profiles: [observability]
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./config/tempo.yaml:/etc/tempo.yaml
+      - tempo_data:/var/tempo
+    ports:
+      - "3200:3200"       # Tempo HTTP API (Grafana queries here)
+    networks:
+      - rag
+
+  # ─── Loki (Log Storage) ───────────────────────────────────────────────────
+  loki:
+    image: grafana/loki:latest
+    container_name: rag-loki
+    restart: unless-stopped
+    # profiles: [observability]
+    command: ["-config.file=/etc/loki.yaml"]
+    volumes:
+      - ./config/loki.yaml:/etc/loki.yaml
+      - loki_data:/loki
+    ports:
+      - "3100:3100"
+    networks:
+      - rag
+
+  # ─── Prometheus (Metrics Scraper) ─────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: rag-prometheus
+    restart: unless-stopped
+    # profiles: [observability]
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.enable-lifecycle"
+      - "--web.enable-remote-write-receiver" # opens the /api/v1/write endpoint that Tempo pushes to
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - rag
+
+  # ─── Grafana (Dashboards) ────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:latest
+    container_name: rag-grafana
+    restart: unless-stopped
+    # profiles: [observability]
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_PASSWORD:-admin}"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_FEATURE_TOGGLES_ENABLE: "traceqlEditor tempoSearch tempoServiceGraph"
+      # Grafana 13 replaced the classic file provisioner with an apiserver-based one
+      # (provisioning=true feature flag). The new provisioner does not reliably load
+      # classic-schema dashboard JSON. Disabling it restores the legacy provisioner.
+      GF_FEATURE_TOGGLES_PROVISIONING: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./config/grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./config/grafana/datasources:/etc/grafana/provisioning/datasources
+    ports:
+      - "3001:3000"
+    networks:
+      - rag
+    depends_on:
+      - prometheus
+      - tempo
+      - loki

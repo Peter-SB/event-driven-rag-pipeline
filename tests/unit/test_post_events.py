@@ -1,4 +1,4 @@
-"""Tests for event model construction and validation.
+﻿"""Tests for event model construction and validation.
 
 Covers PostSyncedEvent, ChunksCreatedEvent, and the BaseEvent base class.
 
@@ -149,7 +149,7 @@ def test_chunks_created_event_default_event_type():
         post_id=1,
         post_table="posts",
         chunk_ids=["a", "b", "c"],
-        chunk_table="chunks_body_bge_base_v1_5",
+        chunk_table="chunks_body_baai_bge_base_en_v1_5",
         task_type="body",
         chunk_count=3,
         created_at=_NOW,
@@ -163,7 +163,7 @@ def test_chunks_created_event_stores_chunk_ids():
         post_id=2,
         post_table="posts",
         chunk_ids=ids,
-        chunk_table="chunks_body_bge_base_v1_5",
+        chunk_table="chunks_body_baai_bge_base_en_v1_5",
         task_type="body",
         chunk_count=len(ids),
         created_at=_NOW,

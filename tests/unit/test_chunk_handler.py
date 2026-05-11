@@ -1,4 +1,4 @@
-"""Tests for ChunkPostHandler business logic.
+﻿"""Tests for ChunkPostHandler business logic.
 
 ChunkPostHandler is the unit of work extracted from CpuChunkWorker.
 All tests use in-memory fakes for I/O — no DB or RabbitMQ required.
@@ -64,7 +64,7 @@ def _make_handler(
 @pytest.mark.asyncio
 async def test_handle_inserts_chunks_for_new_post():
     post = {"body_text": "interesting article " * 100, "title": "Test", "updated_at": "2024-01-01T00:00:00+00:00"}
-    task = ChunkTask(task_type="body", post_id=1, post_table="posts_main", embed_model="bge-base-v1.5")
+    task = ChunkTask(task_type="body", post_id=1, post_table="posts_main", embed_model="BAAI/bge-base-en-v1.5")
     handler, store, _ = _make_handler(post)
 
     chunk_ids = await handler.handle(task)
@@ -76,7 +76,7 @@ async def test_handle_inserts_chunks_for_new_post():
 @pytest.mark.asyncio
 async def test_handle_publishes_chunks_created_event():
     post = {"body_text": "interesting article " * 100, "title": "Test", "updated_at": "2024-01-01T00:00:00+00:00"}
-    task = ChunkTask(task_type="body", post_id=5, post_table="posts_main", embed_model="bge-base-v1.5")
+    task = ChunkTask(task_type="body", post_id=5, post_table="posts_main", embed_model="BAAI/bge-base-en-v1.5")
     handler, _, bus = _make_handler(post)
 
     await handler.handle(task)
@@ -89,7 +89,7 @@ async def test_handle_publishes_chunks_created_event():
 @pytest.mark.asyncio
 async def test_chunks_created_event_carries_chunk_ids():
     post = {"body_text": "word " * 200, "title": "T", "updated_at": "2024-01-01T00:00:00+00:00"}
-    task = ChunkTask(task_type="body", post_id=6, post_table="posts_main", embed_model="bge-base-v1.5")
+    task = ChunkTask(task_type="body", post_id=6, post_table="posts_main", embed_model="BAAI/bge-base-en-v1.5")
     handler, store, bus = _make_handler(post)
 
     await handler.handle(task)
@@ -102,13 +102,13 @@ async def test_chunks_created_event_carries_chunk_ids():
 @pytest.mark.asyncio
 async def test_chunks_created_event_has_correct_chunk_table():
     post = {"body_text": "word " * 200, "title": "T", "updated_at": "2024-01-01T00:00:00+00:00"}
-    task = ChunkTask(task_type="body", post_id=7, post_table="posts_main", embed_model="bge-base-v1.5")
+    task = ChunkTask(task_type="body", post_id=7, post_table="posts_main", embed_model="BAAI/bge-base-en-v1.5")
     handler, _, bus = _make_handler(post)
 
     await handler.handle(task)
 
     event = bus.peek_topic("chunks.created")[0]
-    assert event["chunk_table"] == "posts_main_chunks_body_bge_base_v1_5"
+    assert event["chunk_table"] == "posts_main_chunks_body_baai_bge_base_en_v1_5"
 
 
 # ---------------------------------------------------------------------------
@@ -123,7 +123,7 @@ async def test_all_chunks_skipped_when_hashes_already_exist():
     existing = {c.text_hash: c.id for c in chunks}
 
     post = {"body_text": body, "title": "T", "updated_at": "2024-01-01T00:00:00+00:00"}
-    task = ChunkTask(task_type="body", post_id=8, post_table="posts_main", embed_model="bge-base-v1.5")
+    task = ChunkTask(task_type="body", post_id=8, post_table="posts_main", embed_model="BAAI/bge-base-en-v1.5")
     handler, store, bus = _make_handler(post, existing_hashes=existing)
 
     result = await handler.handle(task)
@@ -144,7 +144,7 @@ async def test_only_new_chunks_inserted_on_partial_update():
     existing = {chunks[0].text_hash: chunks[0].id}
 
     post = {"body_text": body, "title": "T", "updated_at": "2024-01-01T00:00:00+00:00"}
-    task = ChunkTask(task_type="body", post_id=9, post_table="posts_main", embed_model="bge-base-v1.5")
+    task = ChunkTask(task_type="body", post_id=9, post_table="posts_main", embed_model="BAAI/bge-base-en-v1.5")
     handler, store, bus = _make_handler(post, existing_hashes=existing)
 
     await handler.handle(task)
@@ -161,7 +161,7 @@ async def test_only_new_chunks_inserted_on_partial_update():
 @pytest.mark.asyncio
 async def test_handle_skips_when_body_text_is_empty():
     post = {"body_text": "", "title": "T", "updated_at": "2024-01-01T00:00:00+00:00"}
-    task = ChunkTask(task_type="body", post_id=10, post_table="posts_main", embed_model="bge-base-v1.5")
+    task = ChunkTask(task_type="body", post_id=10, post_table="posts_main", embed_model="BAAI/bge-base-en-v1.5")
     handler, store, bus = _make_handler(post)
 
     result = await handler.handle(task)
@@ -174,7 +174,7 @@ async def test_handle_skips_when_body_text_is_empty():
 @pytest.mark.asyncio
 async def test_handle_skips_when_body_text_is_none():
     post = {"body_text": None, "title": "T", "updated_at": "2024-01-01T00:00:00+00:00"}
-    task = ChunkTask(task_type="body", post_id=11, post_table="posts_main", embed_model="bge-base-v1.5")
+    task = ChunkTask(task_type="body", post_id=11, post_table="posts_main", embed_model="BAAI/bge-base-en-v1.5")
     handler, store, _ = _make_handler(post)
 
     result = await handler.handle(task)
@@ -188,19 +188,19 @@ async def test_handle_skips_when_body_text_is_none():
 # ---------------------------------------------------------------------------
 
 def test_resolve_text_prefers_custom_body_over_body_text():
-    task = ChunkTask(task_type="body", post_id=1, post_table="posts_main", embed_model="bge-base-v1.5")
+    task = ChunkTask(task_type="body", post_id=1, post_table="posts_main", embed_model="BAAI/bge-base-en-v1.5")
     post = make_post(body_text="original", custom_body="override")
     assert ChunkPostHandler._resolve_text(task, post) == "override"
 
 
 def test_resolve_text_falls_back_to_body_text():
-    task = ChunkTask(task_type="body", post_id=1, post_table="posts_main", embed_model="bge-base-v1.5")
+    task = ChunkTask(task_type="body", post_id=1, post_table="posts_main", embed_model="BAAI/bge-base-en-v1.5")
     post = make_post(body_text="original", custom_body=None)
     assert ChunkPostHandler._resolve_text(task, post) == "original"
 
 
 def test_resolve_text_summary_title_combines_title_and_summary():
-    task = ChunkTask(task_type="summary_title", post_id=1, post_table="posts_main", embed_model="bge-base-v1.5")
+    task = ChunkTask(task_type="summary_title", post_id=1, post_table="posts_main", embed_model="BAAI/bge-base-en-v1.5")
     post = make_post(title="My Title", summary="A brief summary.")
     result = ChunkPostHandler._resolve_text(task, post)
     assert "My Title" in result
@@ -208,13 +208,13 @@ def test_resolve_text_summary_title_combines_title_and_summary():
 
 
 def test_resolve_text_summary_title_handles_missing_summary():
-    task = ChunkTask(task_type="summary_title", post_id=1, post_table="posts_main", embed_model="bge-base-v1.5")
+    task = ChunkTask(task_type="summary_title", post_id=1, post_table="posts_main", embed_model="BAAI/bge-base-en-v1.5")
     post = make_post(title="Only Title", summary=None)
     assert ChunkPostHandler._resolve_text(task, post) == "Title: Only Title"
 
 
 def test_resolve_text_returns_none_when_both_title_and_summary_absent():
-    task = ChunkTask(task_type="summary_title", post_id=1, post_table="posts_main", embed_model="bge-base-v1.5")
+    task = ChunkTask(task_type="summary_title", post_id=1, post_table="posts_main", embed_model="BAAI/bge-base-en-v1.5")
     post = make_post(title=None, summary=None)
     assert ChunkPostHandler._resolve_text(task, post) is None
 
@@ -224,7 +224,7 @@ def test_resolve_text_analysis_uses_inline_text():
         task_type="analysis",
         post_id=1,
         post_table="posts_main",
-        embed_model="qwen3-0.6b",
+        embed_model="Qwen/Qwen3-0.6B",
         analysis_text="Inline analysis content.",
     )
     post = make_post(analysis_text="Stale post column value")
@@ -236,7 +236,7 @@ def test_resolve_text_analysis_falls_back_to_post_column():
         task_type="analysis",
         post_id=1,
         post_table="posts_main",
-        embed_model="qwen3-0.6b",
+        embed_model="Qwen/Qwen3-0.6B",
         analysis_text=None,
     )
     post = make_post(analysis_text="Stored analysis text.")
@@ -251,14 +251,14 @@ def test_resolve_text_analysis_falls_back_to_post_column():
 async def test_ensure_table_called_with_correct_vector_dim_for_body():
     """ensure_table should be called with dim=768 for body task."""
     post = {"body_text": "word " * 200, "title": "T", "updated_at": "2024-01-01T00:00:00+00:00"}
-    task = ChunkTask(task_type="body", post_id=1, post_table="posts_main", embed_model="bge-base-v1.5")
+    task = ChunkTask(task_type="body", post_id=1, post_table="posts_main", embed_model="BAAI/bge-base-en-v1.5")
     handler, store, _ = _make_handler(post)
 
     await handler.handle(task)
 
     assert len(store.ensure_table_calls) == 1
     table_name, vector_dim = store.ensure_table_calls[0]
-    assert table_name == "posts_main_chunks_body_bge_base_v1_5"
+    assert table_name == "posts_main_chunks_body_baai_bge_base_en_v1_5"
     assert vector_dim == 768, "bge-base-v1.5 should have dim=768"
 
 
@@ -275,7 +275,7 @@ async def test_ensure_table_called_with_correct_vector_dim_for_analysis():
         task_type="analysis",
         post_id=1,
         post_table="posts_main",
-        embed_model="qwen3-0.6b",
+        embed_model="Qwen/Qwen3-0.6B",
         analysis_text="analysis " * 100,
     )
     handler, store, _ = _make_handler(post)
@@ -320,17 +320,17 @@ def test_chunk_task_derives_table_name_correctly():
         task_type="body",
         post_id=1,
         post_table="posts_main",
-        embed_model="bge-base-v1.5",
+        embed_model="BAAI/bge-base-en-v1.5",
     )
-    assert task.chunk_table_name() == "posts_main_chunks_body_bge_base_v1_5"
+    assert task.chunk_table_name() == "posts_main_chunks_body_baai_bge_base_en_v1_5"
 
     task2 = ChunkTask(
         task_type="summary_title",
         post_id=2,
         post_table="posts_test",
-        embed_model="bge-base-v1.5",
+        embed_model="BAAI/bge-base-en-v1.5",
     )
-    assert task2.chunk_table_name() == "posts_test_chunks_summary_title_bge_base_v1_5"
+    assert task2.chunk_table_name() == "posts_test_chunks_summary_title_baai_bge_base_en_v1_5"
 
 
 # ---------------------------------------------------------------------------
@@ -368,7 +368,7 @@ def test_split_text_at_index_strategy_selected_for_summary_title():
 
 def test_resolve_text_summary_title_format_includes_labels():
     """summary_title _resolve_text should format with 'Title:' and 'Summary:' labels."""
-    task = ChunkTask(task_type="summary_title", post_id=1, post_table="posts_main", embed_model="bge-base-v1.5")
+    task = ChunkTask(task_type="summary_title", post_id=1, post_table="posts_main", embed_model="BAAI/bge-base-en-v1.5")
     post = make_post(title="My Article Title", summary="This is a brief summary.")
     result = ChunkPostHandler._resolve_text(task, post)
     assert "Title: My Article Title" in result
@@ -378,7 +378,7 @@ def test_resolve_text_summary_title_format_includes_labels():
 
 def test_resolve_text_summary_title_only_title():
     """summary_title with only title should format correctly."""
-    task = ChunkTask(task_type="summary_title", post_id=1, post_table="posts_main", embed_model="bge-base-v1.5")
+    task = ChunkTask(task_type="summary_title", post_id=1, post_table="posts_main", embed_model="BAAI/bge-base-en-v1.5")
     post = make_post(title="Only Title", summary=None)
     result = ChunkPostHandler._resolve_text(task, post)
     assert result == "Title: Only Title"
@@ -386,7 +386,7 @@ def test_resolve_text_summary_title_only_title():
 
 def test_resolve_text_summary_title_only_summary():
     """summary_title with only summary should format correctly."""
-    task = ChunkTask(task_type="summary_title", post_id=1, post_table="posts_main", embed_model="bge-base-v1.5")
+    task = ChunkTask(task_type="summary_title", post_id=1, post_table="posts_main", embed_model="BAAI/bge-base-en-v1.5")
     post = make_post(title=None, summary="Only summary text.")
     result = ChunkPostHandler._resolve_text(task, post)
     assert result == "Summary: Only summary text."
@@ -405,7 +405,7 @@ async def test_handle_summary_title_produces_single_chunk_for_short_text():
         "summary": "A comprehensive guide to artificial intelligence concepts.",
         "updated_at": "2024-01-01T00:00:00+00:00",
     }
-    task = ChunkTask(task_type="summary_title", post_id=50, post_table="posts_main", embed_model="bge-base-v1.5")
+    task = ChunkTask(task_type="summary_title", post_id=50, post_table="posts_main", embed_model="BAAI/bge-base-en-v1.5")
     handler, store, _ = _make_handler(post)
 
     chunk_ids = await handler.handle(task)
@@ -423,7 +423,7 @@ async def test_handle_summary_title_chunk_text_has_correct_format():
         "summary": "My test summary.",
         "updated_at": "2024-01-01T00:00:00+00:00",
     }
-    task = ChunkTask(task_type="summary_title", post_id=51, post_table="posts_main", embed_model="bge-base-v1.5")
+    task = ChunkTask(task_type="summary_title", post_id=51, post_table="posts_main", embed_model="BAAI/bge-base-en-v1.5")
     handler, store, _ = _make_handler(post)
 
     await handler.handle(task)
@@ -443,7 +443,7 @@ async def test_handle_summary_title_publishes_correct_event():
         "summary": "Summary.",
         "updated_at": "2024-01-01T00:00:00+00:00",
     }
-    task = ChunkTask(task_type="summary_title", post_id=52, post_table="posts_main", embed_model="bge-base-v1.5")
+    task = ChunkTask(task_type="summary_title", post_id=52, post_table="posts_main", embed_model="BAAI/bge-base-en-v1.5")
     handler, _, bus = _make_handler(post)
 
     await handler.handle(task)
@@ -459,7 +459,7 @@ async def test_handle_summary_title_publishes_correct_event():
 
 def test_resolve_text_returns_title_for_title_task_type():
     """_resolve_text should return title for task_type='title'."""
-    task = ChunkTask(task_type="title", post_id=1, post_table="posts_main", embed_model="bge-small-en-v1.5")
+    task = ChunkTask(task_type="title", post_id=1, post_table="posts_main", embed_model="BAAI/bge-small-en-v1.5")
     post = make_post(title="My Title")
     result = ChunkPostHandler._resolve_text(task, post)
     assert result == "My Title"
@@ -467,7 +467,7 @@ def test_resolve_text_returns_title_for_title_task_type():
 
 def test_resolve_text_prefers_custom_title_over_title():
     """_resolve_text should prefer custom_title when present."""
-    task = ChunkTask(task_type="title", post_id=1, post_table="posts_main", embed_model="bge-small-en-v1.5")
+    task = ChunkTask(task_type="title", post_id=1, post_table="posts_main", embed_model="BAAI/bge-small-en-v1.5")
     post = make_post(title="Original Title", custom_title="Custom Title")
     result = ChunkPostHandler._resolve_text(task, post)
     assert result == "Custom Title"
@@ -487,7 +487,7 @@ async def test_handle_title_produces_single_chunk():
         "title": "Understanding AI",
         "updated_at": "2024-01-01T00:00:00+00:00",
     }
-    task = ChunkTask(task_type="title", post_id=60, post_table="posts_main", embed_model="bge-small-en-v1.5")
+    task = ChunkTask(task_type="title", post_id=60, post_table="posts_main", embed_model="BAAI/bge-small-en-v1.5")
     handler, store, _ = _make_handler(post)
 
     chunk_ids = await handler.handle(task)
@@ -504,7 +504,7 @@ async def test_handle_title_publishes_correct_event():
         "title": "Title",
         "updated_at": "2024-01-01T00:00:00+00:00",
     }
-    task = ChunkTask(task_type="title", post_id=61, post_table="posts_main", embed_model="bge-small-en-v1.5")
+    task = ChunkTask(task_type="title", post_id=61, post_table="posts_main", embed_model="BAAI/bge-small-en-v1.5")
     handler, _, bus = _make_handler(post)
 
     await handler.handle(task)
@@ -518,14 +518,14 @@ async def test_handle_title_publishes_correct_event():
 async def test_ensure_table_called_with_correct_vector_dim_for_title():
     """ensure_table should be called with dim=384 for title task (bge-small-en-v1.5)."""
     post = {"title": "Test Title", "body_text": "ignored", "updated_at": "2024-01-01T00:00:00+00:00"}
-    task = ChunkTask(task_type="title", post_id=1, post_table="posts_main", embed_model="bge-small-en-v1.5")
+    task = ChunkTask(task_type="title", post_id=1, post_table="posts_main", embed_model="BAAI/bge-small-en-v1.5")
     handler, store, _ = _make_handler(post)
 
     await handler.handle(task)
 
     assert len(store.ensure_table_calls) == 1
     table_name, vector_dim = store.ensure_table_calls[0]
-    assert table_name == "posts_main_chunks_title_bge_small_en_v1_5"
+    assert table_name == "posts_main_chunks_title_baai_bge_small_en_v1_5"
     assert vector_dim == 384, "bge-small-en-v1.5 should have dim=384"
 
 
@@ -538,7 +538,7 @@ async def test_handle_title_with_custom_title():
         "custom_title": "Custom Title",
         "updated_at": "2024-01-01T00:00:00+00:00",
     }
-    task = ChunkTask(task_type="title", post_id=62, post_table="posts_main", embed_model="bge-small-en-v1.5")
+    task = ChunkTask(task_type="title", post_id=62, post_table="posts_main", embed_model="BAAI/bge-small-en-v1.5")
     handler, store, _ = _make_handler(post)
 
     await handler.handle(task)
@@ -557,7 +557,7 @@ async def test_handle_skips_title_when_title_missing():
         "custom_title": None,
         "updated_at": "2024-01-01T00:00:00+00:00",
     }
-    task = ChunkTask(task_type="title", post_id=63, post_table="posts_main", embed_model="bge-small-en-v1.5")
+    task = ChunkTask(task_type="title", post_id=63, post_table="posts_main", embed_model="BAAI/bge-small-en-v1.5")
     handler, store, bus = _make_handler(post)
 
     chunk_ids = await handler.handle(task)

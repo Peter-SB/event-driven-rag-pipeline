@@ -14,12 +14,23 @@ query — encode the query string carried inline, persist the vector,
 from __future__ import annotations
 
 import logging
+import time
 from typing import Protocol, TypedDict
+
+from opentelemetry import trace
 
 from event_driven_rag_service.events.embedding_events import EmbeddingCompletedEvent
 from event_driven_rag_service.events.search_events import SearchQueryEmbeddedEvent
 from event_driven_rag_service.infrastructure.event_bus import EventBusBase
+from event_driven_rag_service.infrastructure.metrics import (
+    record_embeddings_generated,
+    record_embedding_latency,
+    record_encode_latency,
+    record_failure,
+)
+from event_driven_rag_service.exceptions import ChunkTableNotFoundError
 from event_driven_rag_service.tasks.embed_task import EmbedTask
+from event_driven_rag_service.utils.tracing_utils import extract_trace_context
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +122,56 @@ class EmbedHandler:
 
         Returns (ok_tasks, failed_tasks).
         """
+        total_chunks = sum(len(t.chunk_ids or []) for t in tasks)
+        logger.info(
+            "EmbedHandler.embed_chunks: starting batch (tasks=%d total_chunks=%d model=%s)",
+            len(tasks),
+            total_chunks,
+            model_name,
+        )
+        start_time = time.time()
+
+        # Use the first task's trace context as the parent span.
+        # In the common case all tasks in a batch originate from the same
+        # dispatcher event and therefore share one trace_id.  When the GPU
+        # worker happens to batch tasks from *different* API requests (unlikely
+        # in practice — tasks are queued per-post), the embed_chunks span is
+        # attributed to the first request's trace only.  This is an accepted
+        # trade-off for batch processing: a single span representing N requests
+        # is a better signal than N tiny spans with duplicated model/latency data.
+        first = tasks[0] if tasks else None
+        parent_ctx = extract_trace_context(
+            first.trace_id if first else None,
+            first.parent_span_id if first else None,
+        )
+        tracer = trace.get_tracer(__name__)
+
+        with tracer.start_as_current_span("embed_chunks", context=parent_ctx) as span:
+            span.set_attribute("model", model_name)
+            span.set_attribute("task_count", len(tasks))
+
+            ok_tasks, failed_tasks = await self._embed_chunks_inner(tasks, model_name, encoder, span)
+
+            # Record metrics
+            embeddings_count = sum(len(t.chunk_ids or []) for t in ok_tasks)
+            if embeddings_count > 0:
+                record_embeddings_generated(embeddings_count, model_name)
+
+            if failed_tasks:
+                record_failure("encode_failed", "gpu-worker")
+
+            latency_seconds = time.time() - start_time
+            record_embedding_latency(latency_seconds, model_name)
+
+            return ok_tasks, failed_tasks
+
+    async def _embed_chunks_inner(
+        self,
+        tasks: list[EmbedTask],
+        model_name: str,
+        encoder: EmbeddingModel,
+        span,
+    ) -> tuple[list[EmbedTask], list[EmbedTask]]:
         # Flatten to (task, chunk_id, text) triples across all tasks.
         triples: list[tuple[EmbedTask, str, str]] = []
         fetch_failed: list[EmbedTask] = []
@@ -119,6 +180,14 @@ class EmbedHandler:
                 continue
             try:
                 pairs = await self._chunks.fetch_texts(task.chunk_ids, task.chunk_table)
+            except ChunkTableNotFoundError:
+                logger.warning(
+                    "EmbedHandler: chunk table %r does not exist — skipping task (task_id=%s). "
+                    "The CPU worker likely failed before creating the table.",
+                    task.chunk_table,
+                    task.task_id,
+                )
+                continue
             except Exception:
                 logger.exception(
                     "EmbedHandler: fetch_texts failed (chunk_table=%s, task_id=%s) — failing task",
@@ -131,14 +200,30 @@ class EmbedHandler:
                 triples.append((task, chunk_id, text))
 
         if not triples:
+            logger.info(
+                "EmbedHandler: no chunks to encode after fetch (fetch_failed=%d)",
+                len(fetch_failed),
+            )
             return [t for t in tasks if t not in fetch_failed], fetch_failed
 
         texts = [t[2] for t in triples]
+        logger.info("EmbedHandler: encoding %d texts with %s", len(texts), encoder.name)
+        encode_start = time.time()
         try:
             vectors = encoder.encode(texts)
         except Exception:
             logger.exception("EmbedHandler: encode() failed — failing entire batch")
             return [], tasks
+        encode_time = time.time() - encode_start
+        record_encode_latency(encode_time, model_name, len(texts))
+        logger.info(
+            "EmbedHandler: encoding complete (texts=%d vectors=%d latency=%.2fs throughput=%.0f texts/s per_text=%.3fs)",
+            len(texts),
+            len(vectors),
+            encode_time,
+            len(texts) / encode_time if encode_time > 0 else 0,
+            encode_time / len(texts) if len(texts) > 0 else 0,
+        )
 
         rows: list[EmbeddingRow] = []
         for i in range(len(triples)):
@@ -158,22 +243,40 @@ class EmbedHandler:
                     triples[i][1],
                     task.post_id,
                 )
+
+        logger.info(
+            "EmbedHandler: persisting %d embedding rows to store",
+            len(rows),
+        )
         await self._embeddings.save_batch(rows)
+        logger.info(
+            "EmbedHandler: persistence complete (rows=%d)",
+            len(rows),
+        )
 
         # Emit one embedding.completed per (post_id, chunk_table) group.
-        # key → (post_id, post_table, chunk_table, trace_id, chunk_ids)
+        # Falls back to the first task's trace_id when OTEL is disabled.
+        from event_driven_rag_service.utils.tracing_utils import propagate_trace
+        first_task_trace = triples[0][0].trace_id if triples else None
+        trace_id, parent_span_id = propagate_trace(first_task_trace)
+
         GroupKey = tuple[int | None, str | None]
         group_chunks: dict[GroupKey, list[str]] = {}
-        group_meta: dict[GroupKey, tuple[str | None, str | None, str | None]] = {}
+        group_meta: dict[GroupKey, tuple[str | None, str | None]] = {}
         for task, chunk_id, _ in triples:
             key: GroupKey = (task.post_id, task.chunk_table)
             if key not in group_chunks:
                 group_chunks[key] = []
-                group_meta[key] = (task.post_table, task.chunk_table, task.trace_id)
+                group_meta[key] = (task.post_table, task.chunk_table)
             group_chunks[key].append(chunk_id)
 
+        logger.info(
+            "EmbedHandler: grouped embeddings into %d event(s) by (post_id, chunk_table)",
+            len(group_chunks),
+        )
+
         for key, chunk_ids in group_chunks.items():
-            post_table, chunk_table, trace_id = group_meta[key]
+            post_table, chunk_table = group_meta[key]
             event = EmbeddingCompletedEvent(
                 post_id=key[0],
                 post_table=post_table,
@@ -181,8 +284,16 @@ class EmbedHandler:
                 chunk_table=chunk_table,
                 model_name=model_name,
                 trace_id=trace_id,
+                parent_span_id=parent_span_id,
             )
             await self._event_log.publish(event.event_type, event.to_dict())
+            logger.info(
+                "embedding.completed chunks=%d model=%s post_id=%s table=%s",
+                len(chunk_ids),
+                model_name,
+                key[0],
+                chunk_table,
+            )
 
         # Deduplicate: one task may have contributed multiple chunk_ids.
         seen: dict[int, EmbedTask] = {id(t[0]): t[0] for t in triples}
@@ -200,34 +311,60 @@ class EmbedHandler:
         Missing query/job_id is treated as ok (logged and skipped) to avoid
         poisoning the DLQ with bad data.
         """
-        if not task.query or not task.query_job_id:
-            logger.warning(
-                "EmbedHandler: query task missing query or job_id — skipping (task_id=%s)",
-                task.task_id,
-            )
-            return True
+        start_time = time.time()
 
-        try:
-            vector = encoder.encode([task.query])[0]
-            await self._embeddings.save_batch(
-                [
-                    QueryEmbeddingRow(
-                        query_job_id=task.query_job_id,
-                        model_name=model_name,
-                        embedding=vector,
-                    )
-                ]
-            )
-            event = SearchQueryEmbeddedEvent(
-                query_job_id=task.query_job_id,
-                model_name=model_name,
-                trace_id=task.trace_id,
-            )
-            await self._event_log.publish(event.event_type, event.to_dict())
-            return True
-        except Exception:
-            logger.exception(
-                "EmbedHandler: query embed failed (job_id=%s)",
-                task.query_job_id,
-            )
-            return False
+        from event_driven_rag_service.utils.tracing_utils import current_trace_ids
+        parent_ctx = extract_trace_context(task.trace_id, task.parent_span_id)
+        tracer = trace.get_tracer(__name__)
+
+        with tracer.start_as_current_span("embed_query", context=parent_ctx) as span:
+            span.set_attribute("model", model_name)
+            if task.query_job_id:
+                span.set_attribute("query_job_id", task.query_job_id)
+
+            if not task.query or not task.query_job_id:
+                logger.warning(
+                    "EmbedHandler: query task missing query or job_id — skipping (task_id=%s)",
+                    task.task_id,
+                )
+                return True
+
+            try:
+                encode_start = time.time()
+                vector = encoder.encode([task.query])[0]
+                encode_time = time.time() - encode_start
+                record_encode_latency(encode_time, model_name, 1)
+
+                await self._embeddings.save_batch(
+                    [
+                        QueryEmbeddingRow(
+                            query_job_id=task.query_job_id,
+                            model_name=model_name,
+                            embedding=vector,
+                        )
+                    ]
+                )
+
+                from event_driven_rag_service.utils.tracing_utils import propagate_trace
+                trace_id, parent_span_id = propagate_trace(task.trace_id)
+                event = SearchQueryEmbeddedEvent(
+                    query_job_id=task.query_job_id,
+                    model_name=model_name,
+                    trace_id=trace_id,
+                    parent_span_id=parent_span_id,
+                )
+                await self._event_log.publish(event.event_type, event.to_dict())
+
+                # Record success
+                record_embeddings_generated(1, model_name)
+                latency_seconds = time.time() - start_time
+                record_embedding_latency(latency_seconds, model_name)
+
+                return True
+            except Exception:
+                logger.exception(
+                    "EmbedHandler: query embed failed (job_id=%s)",
+                    task.query_job_id,
+                )
+                record_failure("encode_failed", "gpu-worker")
+                return False

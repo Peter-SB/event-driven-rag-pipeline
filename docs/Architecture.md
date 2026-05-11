@@ -127,6 +127,74 @@ The system is built around a deliberate separation between two layers that solve
 
 These layers are not redundant. The Event Log is the audit trail and integration backbone — durable, replayable, consumer-agnostic. RabbitMQ is the work distribution mechanism — it handles routing, retries, priorities, and backpressure. Each does what it is best suited for.
 
+```mermaid
+flowchart TD
+
+    %% ─── PRODUCER ───────────────────────────────────
+
+    subgraph PRODUCER["📤 Producer"]
+        API["API / Service"]
+    end
+
+    %% ─── EVENT LOG ─────────────────────────────────
+
+    subgraph EL1["📋 Event Log · (immutable, replayable)"]
+        E1(["post.synced"])
+    end
+
+    %% ─── DISPATCHER ────────────────────────────────
+
+    subgraph DISP["🔀 Dispatcher · bridge layer"]
+        D1["Translate event → tasks"]
+    end
+
+    %% ─── TASK QUEUE ────────────────────────────────
+
+    subgraph TQ["⚙️ Task Queue · RabbitMQ"]
+        T1["chunk.post task"]
+    end
+
+    %% ─── WORKER + HANDLER ──────────────────────────
+
+    subgraph WK["🖥️ Worker · long-lived"]
+        W1["process task\n(chunk post)"]
+    end
+
+    subgraph TH["🎯 Task Handler"]
+        H1["parse → validate → call worker fn\nack / reject"]
+    end
+
+    %% ─── NEXT EVENT ────────────────────────────────
+
+    subgraph EL2["📋 Event Log"]
+        E2(["post.chunked"])
+    end
+
+    %% ─── FLOW ─────────────────────────────────────
+
+    API -->|"emit event"| E1
+    E1 --> D1
+    D1 -->|"publish task"| T1
+    T1 --> W1
+    W1 --> H1
+    H1 -->|"emit event"| E2
+
+    %% ─── STYLES (match main diagram) ──────────────
+
+    classDef eventLog    fill:#FAEEDA,stroke:#BA7517,color:#633806
+    classDef dispatcher  fill:#EEEDFE,stroke:#534AB7,color:#3C3489
+    classDef taskQueue   fill:#E1F5EE,stroke:#0F6E56,color:#085041
+    classDef handler     fill:#FBEAF0,stroke:#993556,color:#72243E
+    classDef worker      fill:#F1EFE8,stroke:#5F5E5A,color:#444441
+    classDef producer    fill:#F1EFE8,stroke:#5F5E5A,color:#444441
+
+    class E1,E2 eventLog
+    class D1 dispatcher
+    class T1 taskQueue
+    class H1 handler
+    class W1 worker
+    class API producer
+```
 ---
 
 ## Component Roles

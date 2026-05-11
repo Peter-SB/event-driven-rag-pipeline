@@ -1,4 +1,4 @@
-"""Tests for task models and the task registry.
+﻿"""Tests for task models and the task registry.
 
 Covers ChunkTask, EmbedTask construction, the TASK_ROUTES lookup, and
 the parse_task() discriminated-union deserialiser used by workers.
@@ -29,28 +29,28 @@ from event_driven_rag_service.tasks.registry import TASK_ROUTES, parse_task
 # ---------------------------------------------------------------------------
 
 def test_chunk_task_table_name_body():
-    task = ChunkTask(task_type="body", post_id=1, post_table="posts_main", embed_model="bge-base-v1.5")
-    assert task.chunk_table_name() == "posts_main_chunks_body_bge_base_v1_5"
+    task = ChunkTask(task_type="body", post_id=1, post_table="posts_main", embed_model="BAAI/bge-base-en-v1.5")
+    assert task.chunk_table_name() == "posts_main_chunks_body_baai_bge_base_en_v1_5"
 
 
 def test_chunk_task_table_name_summary_title():
-    task = ChunkTask(task_type="summary_title", post_id=1, post_table="posts_main", embed_model="bge-base-v1.5")
-    assert task.chunk_table_name() == "posts_main_chunks_summary_title_bge_base_v1_5"
+    task = ChunkTask(task_type="summary_title", post_id=1, post_table="posts_main", embed_model="BAAI/bge-base-en-v1.5")
+    assert task.chunk_table_name() == "posts_main_chunks_summary_title_baai_bge_base_en_v1_5"
 
 
 def test_chunk_task_table_name_analysis_with_different_model():
-    task = ChunkTask(task_type="analysis", post_id=1, post_table="posts_main", embed_model="qwen3-0.6b")
-    assert task.chunk_table_name() == "posts_main_chunks_analysis_qwen3_0_6b"
+    task = ChunkTask(task_type="analysis", post_id=1, post_table="posts_main", embed_model="Qwen/Qwen3-0.6B")
+    assert task.chunk_table_name() == "posts_main_chunks_analysis_qwen_qwen3_0_6b"
 
 
 def test_chunk_task_kind_is_always_chunk():
-    task = ChunkTask(task_type="body", post_id=99, post_table="posts", embed_model="bge-base-v1.5")
+    task = ChunkTask(task_type="body", post_id=99, post_table="posts", embed_model="BAAI/bge-base-en-v1.5")
     assert task.kind == "chunk"
 
 
 def test_chunk_task_gets_unique_task_ids():
-    t1 = ChunkTask(task_type="body", post_id=1, post_table="posts", embed_model="bge-base-v1.5")
-    t2 = ChunkTask(task_type="body", post_id=1, post_table="posts", embed_model="bge-base-v1.5")
+    t1 = ChunkTask(task_type="body", post_id=1, post_table="posts", embed_model="BAAI/bge-base-en-v1.5")
+    t2 = ChunkTask(task_type="body", post_id=1, post_table="posts", embed_model="BAAI/bge-base-en-v1.5")
     # Each instance must have its own UUID, not a shared class-level value
     assert t1.task_id != t2.task_id
 
@@ -60,15 +60,15 @@ def test_chunk_task_gets_unique_task_ids():
 # ---------------------------------------------------------------------------
 
 def test_embed_task_kind_is_always_embed():
-    task = EmbedTask(task_type="chunk", model_name="bge-base-v1.5", chunk_ids=["a", "b"], chunk_table="chunks_body_bge_base_v1_5")
+    task = EmbedTask(task_type="chunk", model_name="BAAI/bge-base-en-v1.5", chunk_ids=["a", "b"], chunk_table="chunks_body_baai_bge_base_en_v1_5")
     assert task.kind == "embed"
 
 
 def test_embed_task_routing_key_interpolates_model_name():
-    task = EmbedTask(task_type="chunk", model_name="bge-base-v1.5", chunk_ids=["x"])
+    task = EmbedTask(task_type="chunk", model_name="BAAI/bge-base-en-v1.5", chunk_ids=["x"])
     route = TASK_ROUTES["embed"]
     key = route.resolve_key(task)
-    assert key == "gpu.embed.bge-base-v1.5"
+    assert key == "gpu.embed.bge-base-en-v1.5"
 
 
 # ---------------------------------------------------------------------------
@@ -98,7 +98,7 @@ def test_parse_task_returns_chunk_task_for_kind_chunk():
         "task_type": "body",
         "post_id": 42,
         "post_table": "posts",
-        "embed_model": "bge-base-v1.5",
+        "embed_model": "BAAI/bge-base-en-v1.5",
     }
     task = parse_task(payload)
     assert isinstance(task, ChunkTask)
@@ -109,13 +109,13 @@ def test_parse_task_returns_embed_task_for_kind_embed():
     payload = {
         "kind": "embed",
         "task_type": "chunk",
-        "model_name": "bge-base-v1.5",
+        "model_name": "BAAI/bge-base-en-v1.5",
         "chunk_ids": ["id1", "id2"],
-        "chunk_table": "chunks_body_bge_base_v1_5",
+        "chunk_table": "chunks_body_baai_bge_base_en_v1_5",
     }
     task = parse_task(payload)
     assert isinstance(task, EmbedTask)
-    assert task.model_name == "bge-base-v1.5"
+    assert task.model_name == "BAAI/bge-base-en-v1.5"
 
 
 def test_parse_task_raises_on_unknown_kind():
@@ -133,7 +133,7 @@ def test_chunk_task_round_trips_through_json():
         task_type="body",
         post_id=7,
         post_table="posts",
-        embed_model="bge-base-v1.5",
+        embed_model="BAAI/bge-base-en-v1.5",
         trace_id="trace-abc",
     )
     restored = parse_task(json.loads(original.model_dump_json()))

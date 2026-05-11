@@ -1,4 +1,4 @@
-"""Unit tests for SearchDispatcher.
+﻿"""Unit tests for SearchDispatcher.
 
 Tests the dispatcher's responsibility:
 - Consume search_job.created events
@@ -83,7 +83,7 @@ async def test_search_dispatcher_publishes_embed_task_for_query():
     routing_key = call_args[1]["routing_key"]  # Named arg
 
     # Verify routing key
-    assert routing_key == "gpu.embed.bge-base-v1.5", f"Expected routing_key 'gpu.embed.bge-base-v1.5', got {routing_key!r}"
+    assert routing_key == "gpu.embed.bge-base-en-v1.5", f"Expected routing_key 'gpu.embed.bge-base-en-v1.5', got {routing_key!r}"
 
     # Decode and validate EmbedTask
     task_dict = json.loads(message.body.decode())
@@ -92,7 +92,7 @@ async def test_search_dispatcher_publishes_embed_task_for_query():
     assert task.task_type == "query", f"Expected task_type 'query', got {task.task_type!r}"
     assert task.query == query_text, f"Expected query {query_text!r}, got {task.query!r}"
     assert task.query_job_id == job_id, f"Expected query_job_id {job_id!r}, got {task.query_job_id!r}"
-    assert task.model_name == "bge-base-v1.5", f"Expected model_name 'bge-base-v1.5', got {task.model_name!r}"
+    assert task.model_name == "BAAI/bge-base-en-v1.5", f"Expected model_name 'bge-base-v1.5', got {task.model_name!r}"
     assert task.trace_id == trace_id, f"Expected trace_id {trace_id!r}, got {task.trace_id!r}"
 
 

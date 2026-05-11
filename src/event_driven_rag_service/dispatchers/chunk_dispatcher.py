@@ -7,16 +7,32 @@ Single responsibility: translate chunk-ready events into embedding tasks.
 No work is done here.
 """
 import logging
+from datetime import datetime, UTC
 
 import aio_pika
+from opentelemetry import trace
 
 from event_driven_rag_service.config import consumer_groups
 from event_driven_rag_service.config.embedding_config import EMBED_CONFIGS
 from event_driven_rag_service.infrastructure.event_bus import EventBusBase
+from event_driven_rag_service.infrastructure.metrics import set_queue_lag
 from event_driven_rag_service.tasks.embed_task import EmbedTask
 from event_driven_rag_service.tasks.registry import TASK_ROUTES
+from event_driven_rag_service.utils.tracing_utils import extract_trace_context, propagate_trace
 
 logger = logging.getLogger(__name__)
+
+
+def _record_queue_lag(event: dict, queue_name: str) -> None:
+    """Record how long this event sat in the event log before being dispatched."""
+    raw = event.get("occurred_at")
+    if raw:
+        try:
+            occurred = datetime.fromisoformat(raw)
+            lag = (datetime.now(UTC) - occurred).total_seconds()
+            set_queue_lag(max(lag, 0.0), queue_name)
+        except (ValueError, TypeError):
+            pass
 
 
 class ChunkDispatcher:
@@ -43,6 +59,7 @@ class ChunkDispatcher:
             "chunks.created", consumer_group=consumer_groups.CHUNKS_CREATED
         ):
             try:
+                _record_queue_lag(event, "embed")
                 await self._dispatch_embedding(exchange, route, event)
             except Exception:
                 logger.exception(
@@ -56,30 +73,41 @@ class ChunkDispatcher:
         route,
         event: dict,
     ) -> None:
-        # task_type is stamped by CpuChunkWorker onto the event so we know
-        # which model to embed with.
-        task_type = event.get("task_type", "body")
-        embed_cfg = EMBED_CONFIGS.get(task_type, EMBED_CONFIGS["body"])
+        parent_ctx = extract_trace_context(
+            event.get("trace_id"), event.get("parent_span_id")
+        )
+        tracer = trace.get_tracer(__name__)
 
-        task = EmbedTask(
-            task_type="chunk",
-            model_name=embed_cfg.model,
-            post_id=event["post_id"],
-            post_table=event["post_table"],
-            chunk_ids=event["chunk_ids"],
-            chunk_table=event["chunk_table"],
-            source_event_id=event.get("event_id"),
-            trace_id=event.get("trace_id"),
-        )
+        with tracer.start_as_current_span("chunk_dispatcher.dispatch", context=parent_ctx) as span:
+            task_type = event.get("task_type", "body")
+            embed_cfg = EMBED_CONFIGS.get(task_type, EMBED_CONFIGS["body"])
 
-        routing_key = route.resolve_key(task)
-        await exchange.publish(
-            aio_pika.Message(task.model_dump_json().encode()),
-            routing_key=routing_key,
-        )
-        logger.debug(
-            "ChunkDispatcher: dispatched embed task (%d chunks → %s)",
-            len(event["chunk_ids"]),
-            routing_key,
-        )
+            span.set_attribute("post_id", event["post_id"])
+            span.set_attribute("chunk_count", len(event["chunk_ids"]))
+            span.set_attribute("model", embed_cfg.model)
+
+            trace_id, parent_span_id = propagate_trace(event.get("trace_id"))
+
+            task = EmbedTask(
+                task_type="chunk",
+                model_name=embed_cfg.model,
+                post_id=event["post_id"],
+                post_table=event["post_table"],
+                chunk_ids=event["chunk_ids"],
+                chunk_table=event["chunk_table"],
+                source_event_id=event.get("event_id"),
+                trace_id=trace_id,
+                parent_span_id=parent_span_id,
+            )
+
+            routing_key = route.resolve_key(task)
+            await exchange.publish(
+                aio_pika.Message(task.model_dump_json().encode()),
+                routing_key=routing_key,
+            )
+            logger.debug(
+                "ChunkDispatcher: dispatched embed task (%d chunks → %s)",
+                len(event["chunk_ids"]),
+                routing_key,
+            )
 

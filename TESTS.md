@@ -177,6 +177,9 @@ pytest tests/e2e/
 docker-compose down
 ```
 
+- Use `OTEL_ENABLED=true` for observability-enabled tests (e.g. GPU worker integration tests). 
+- Use `-m e2e` to run only E2E tests.
+
 ### Run Specific Test
 
 ```bash

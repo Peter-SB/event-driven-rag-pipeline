@@ -1,0 +1,50 @@
+# OpenTelemetry Collector Configuration
+# Receives traces and metrics from the RAG pipeline services.
+# Logs go stdout → Grafana Alloy → Loki (not through the collector).
+# Routes: traces → Tempo, metrics → Prometheus
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    send_batch_size: 100
+    timeout: 10s
+
+exporters:
+  # Traces → Tempo
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+
+  # Metrics → Prometheus (scraped by Prometheus on :9464)
+  prometheus:
+    endpoint: 0.0.0.0:9464
+    const_labels:
+      env: homelab
+
+  # Summary counts per batch — remove at scale
+  debug:
+    verbosity: basic
+
+service:
+  telemetry:
+    logs:
+      level: warn
+
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp/tempo, debug]
+
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [prometheus, debug]

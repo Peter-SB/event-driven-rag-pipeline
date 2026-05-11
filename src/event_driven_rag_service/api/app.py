@@ -21,7 +21,13 @@ import aio_pika
 from fastapi import FastAPI
 
 from event_driven_rag_service.config.settings import settings
+from event_driven_rag_service.infrastructure.observability import setup_observability
 from event_driven_rag_service.infrastructure.event_bus import create_event_bus
+
+# Configure structured logging + OTEL SDK once, at module load time.
+# This must run before any logger.info() calls — including those inside uvicorn
+# and fastapi startup — so the very first log record is structured.
+setup_observability("rag-api")
 from event_driven_rag_service.infrastructure.task_queue import setup_topology
 from event_driven_rag_service.repository.post_repository import PostRepository
 from event_driven_rag_service.repository.search_job_repository import SearchJobRepository
@@ -43,7 +49,8 @@ async def lifespan(app: FastAPI):
     )
 
     # --- RabbitMQ --------------------------------------------------------
-    rmq = await aio_pika.connect_robust(settings.rabbitmq_url)
+    # timeout=30s to allow RabbitMQ time to fully initialize after healthcheck passes
+    rmq = await aio_pika.connect_robust(settings.rabbitmq_url, timeout=30.0)
     await setup_topology(rmq)
     logger.info("RabbitMQ topology ready")
 

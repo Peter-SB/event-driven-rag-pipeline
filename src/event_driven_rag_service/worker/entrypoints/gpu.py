@@ -14,24 +14,25 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from typing import Any
 
 import asyncpg
 
 from event_driven_rag_service.config.settings import settings
+from event_driven_rag_service.infrastructure.observability import setup_observability
 from event_driven_rag_service.config.embedding_config import EMBED_CONFIGS
 from event_driven_rag_service.infrastructure.event_bus import create_event_bus, PostgresEventBus
+from event_driven_rag_service.infrastructure.metrics import record_model_load_time
 from event_driven_rag_service.repository.chunk_repository import ChunkRepository
 from event_driven_rag_service.repository.search_job_repository import SearchJobRepository
 from event_driven_rag_service.worker.gpu_worker import GpuEmbedWorker
 from event_driven_rag_service.handlers.embed_handler import EmbedHandler
 
-logger = logging.getLogger(__name__)
+# Replace logging.basicConfig() — routes all stdlib logging.getLogger() calls through structlog.
+setup_observability("rag-gpu-worker")
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -43,7 +44,7 @@ def _load_model(model_name: str) -> Any:
 
     Set MOCK_EMBEDDINGS=1 for local development without a GPU.
     """
-    if os.getenv("MOCK_EMBEDDINGS"):
+    if os.getenv("MOCK_EMBEDDINGS", "").strip() not in ("", "0", "false", "False"):
         logger.info("Using mock embedding model for %s", model_name)
         return _MockEmbeddingModel(model_name)
 
@@ -51,18 +52,39 @@ def _load_model(model_name: str) -> Any:
         from sentence_transformers import SentenceTransformer
 
         logger.info("Loading SentenceTransformer: %s", model_name)
-        model = SentenceTransformer(model_name, trust_remote_code=True)
+        load_start = time.time()
+        st_model = SentenceTransformer(model_name, trust_remote_code=True)
+        load_time = time.time() - load_start
+        dim = st_model.get_embedding_dimension()
+        record_model_load_time(load_time, model_name)
         logger.info(
-            "Model loaded: %s (dim=%d)",
+            "Model loaded: %s (dim=%d load_time=%.2fs)",
             model_name,
-            model.get_sentence_embedding_dimension(),
+            dim,
+            load_time,
         )
-        return model
+        return _RealEmbeddingModel(st_model, model_name)
     except ImportError:
         logger.warning(
             "sentence-transformers not available — falling back to mock. "
             "Install via: pip install sentence-transformers"
         )
+
+
+class _RealEmbeddingModel:
+    """Wraps SentenceTransformer to match the EmbeddingModel protocol.
+    todo: move to somewhere more sensible"""
+
+    def __init__(self, model: Any, name: str) -> None:
+        self._model = model
+        self._name = name
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def encode(self, texts: list[str]) -> list[list[float]]:
+        return self._model.encode(texts)
 
 
 class _MockEmbeddingModel:

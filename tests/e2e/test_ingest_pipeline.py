@@ -1,4 +1,4 @@
-"""E2E tests for the complete ingest pipeline.
+﻿"""E2E tests for the complete ingest pipeline.
 
 Verifies the full pipeline against the running Docker Compose stack:
 
@@ -201,7 +201,7 @@ async def test_sync_post_triggers_chunk_and_embed_pipeline(
     )
 
     # Step 3.1: Check chunk table exists (it may be created lazily by the dispatcher)
-    chunk_table = "posts_e2e_chunks_body_bge_base_v1_5"
+    chunk_table = "posts_e2e_chunks_body_baai_bge_base_en_v1_5"
     table_exists = False
     for attempt in range(20):
         async with postgres_pool_e2e.acquire() as conn:
@@ -317,7 +317,7 @@ async def test_sync_post_triggers_chunk_and_embed_pipeline(
     assert ec_event["post_id"] == post_id
     assert ec_event["post_table"] == "posts_e2e"
     assert ec_event["chunk_table"] == chunk_table
-    assert ec_event["model_name"] == "bge-base-v1.5"
+    assert ec_event["model_name"] == "BAAI/bge-base-en-v1.5"
     assert len(ec_event["chunk_ids"]) == len(chunk_ids)
     assert all(isinstance(cid, str) for cid in ec_event["chunk_ids"]), (
         "chunk_ids in embedding.completed should all be strings"
@@ -343,6 +343,29 @@ async def test_sync_post_triggers_chunk_and_embed_pipeline(
         )
         assert all(isinstance(v, float) for v in embedding), "Embedding should contain floats"
 
+    # Step 8.1: Verify embeddings for title chunk
+    title_chunk_table = "posts_e2e_chunks_title_baai_bge_small_en_v1_5"
+    title_embeddings = []
+    for attempt in range(20):  # 20 attempts * 0.5s = 10s max wait
+        async with postgres_pool_e2e.acquire() as conn:
+            try:
+                titles = await conn.fetch(
+                    f"""
+                    SELECT text FROM {title_chunk_table}
+                    WHERE post_id = $1 AND embedding IS NOT NULL
+                    """,
+                    post_id,
+                )
+                if titles and len(titles) > 0:
+                    if not "Test Post for E2E Pipeline" in [t["text"] for t in titles]:
+                        assert False, f"Expected title chunk text not found in {title_chunk_table}, got {[t['text'] for t in titles]}"
+                    break
+            except asyncpg.exceptions.UndefinedTableError:
+                # Table might not exist if title chunking hasn't run
+                pass
+
+        await asyncio.sleep(0.5) 
+
     logger.info("E2E pipeline test completed successfully")
 
 
@@ -359,7 +382,7 @@ async def test_multiple_posts_sync_concurrently(
     """
     post_ids = [200, 201, 202]
     embedding_dim = 768
-    chunk_table = "posts_e2e_chunks_body_bge_base_v1_5"
+    chunk_table = "posts_e2e_chunks_body_baai_bge_base_en_v1_5"
 
     # Sync all posts at once
     posts_payload = []
@@ -450,7 +473,7 @@ async def test_multiple_posts_sync_concurrently(
         assert event["post_id"] == pid
         assert event["post_table"] == "posts_e2e"
         assert event["chunk_table"] == chunk_table
-        assert event["model_name"] == "bge-base-v1.5"
+        assert event["model_name"] == "BAAI/bge-base-en-v1.5"
         assert len(event["chunk_ids"]) > 0
         logger.info(
             "embedding.completed event verified for post_id=%s (model=%s)",
@@ -520,7 +543,7 @@ async def test_title_chunking_and_embedding_pipeline(
     logger.info("post.synced event verified")
 
     # Step 3: Wait for title chunks to be created in the title chunk table
-    title_chunk_table = "posts_e2e_chunks_title_bge_small_en_v1_5"
+    title_chunk_table = "posts_e2e_chunks_title_baai_bge_small_en_v1_5"
     
     # Wait for table to be created
     table_exists = False
@@ -611,7 +634,7 @@ async def test_title_chunking_and_embedding_pipeline(
     )
     title_embed_event = None
     for event in embed_completed_events:
-        if event.get("model_name") == "bge-small-en-v1.5":
+        if event.get("model_name") == "BAAI/bge-small-en-v1.5":
             title_embed_event = event
             break
 
@@ -640,3 +663,207 @@ async def test_title_chunking_and_embedding_pipeline(
         assert all(isinstance(v, float) for v in embedding), "Title embedding should contain floats"
 
     logger.info("Title embedding pipeline test completed successfully")
+
+
+@pytest.mark.asyncio
+async def test_summary_title_chunking_and_embedding_pipeline(
+    postgres_pool_e2e: asyncpg.Pool,
+    async_client: httpx.AsyncClient,
+):
+    """
+    Full pipeline for summary_title embedding: POST /sync → summary_title chunks → embeddings.
+
+    Flow:
+    1. POST /posts/sync with a post containing both title and summary
+    2. Verify post.synced event has has_summary=True
+    3. Poll until summary_title chunk table is created
+    4. Verify chunks.created event with task_type="summary_title"
+    5. Poll until summary_title embeddings are written with Qwen/Qwen3-0.6B (1024 dim)
+    6. Verify embedding.completed event with correct model_name
+    7. Verify embedding dimensions are 1024 (Qwen3-0.6B)
+    8. Verify chunk text contains both Title and Summary prefixes
+    """
+    post_id = 400
+
+    # Step 1: Create and sync a post with a summary
+    sync_payload = {
+        "posts": [
+            {
+                "id": post_id,
+                "redditId": f"reddit_{post_id}",
+                "externalSource": "reddit",
+                "redditCreatedAt": datetime.now(UTC).isoformat(),
+                "url": f"https://reddit.com/r/test/comments/{post_id}",
+                "title": "Deep Dive into Transformer Architecture",
+                "bodyText": (
+                    "This post explores the transformer architecture in depth. "
+                    "Attention mechanisms allow models to weigh token relationships. "
+                    "Self-attention is computed across all positions simultaneously. " * 3
+                ),
+                "summary": (
+                    "A comprehensive overview of how transformer models work, "
+                    "covering attention mechanisms and self-attention computation."
+                ),
+                "author": "test_user",
+                "addedAt": datetime.now(UTC).isoformat(),
+                "updatedAt": datetime.now(UTC).isoformat(),
+            }
+        ],
+        "library_id": "e2e",
+    }
+
+    response = await async_client.post("/posts/sync", json=sync_payload)
+    assert response.status_code == 200
+    sync_result = response.json()
+    assert sync_result["results"][0]["success"] is True
+    logger.info(f"POST /sync succeeded for post_id={post_id} with summary")
+
+    # Step 2: Verify post.synced event has has_summary=True
+    post_synced_events = await fetch_events(
+        postgres_pool_e2e, "post.synced", post_id, timeout=5.0
+    )
+    assert len(post_synced_events) >= 1
+    ps_event = post_synced_events[0]
+    assert ps_event["event_type"] == "post.synced"
+    assert ps_event["has_summary"] is True, (
+        "post.synced event should have has_summary=True when summary is provided"
+    )
+    assert ps_event["fields_changed"] == [], "New post should have empty fields_changed"
+    logger.info("post.synced event verified: has_summary=%s", ps_event["has_summary"])
+
+    # Step 3: Wait for summary_title chunk table to be created
+    summary_chunk_table = "posts_e2e_chunks_summary_title_qwen_qwen3_0_6b"
+
+    table_exists = False
+    for attempt in range(20):
+        async with postgres_pool_e2e.acquire() as conn:
+            count = await conn.fetchval(
+                "SELECT COUNT(*)::int FROM information_schema.tables WHERE table_name = $1",
+                summary_chunk_table,
+            )
+            if count == 1:
+                table_exists = True
+                break
+        await asyncio.sleep(0.5)
+
+    assert table_exists, (
+        f"Summary chunk table {summary_chunk_table} does not exist after 10s"
+    )
+    logger.info(f"Summary chunk table {summary_chunk_table} created successfully")
+
+    # Poll for summary_title chunks to be created
+    summary_chunks = []
+    for attempt in range(20):
+        async with postgres_pool_e2e.acquire() as conn:
+            try:
+                rows = await conn.fetch(
+                    f"""
+                    SELECT * FROM {summary_chunk_table}
+                    WHERE post_id = $1 ORDER BY chunk_index
+                    """,
+                    post_id,
+                )
+                if rows:
+                    summary_chunks = rows
+                    break
+            except asyncpg.exceptions.UndefinedTableError:
+                pass
+        await asyncio.sleep(0.5)
+
+    assert len(summary_chunks) > 0, (
+        f"No summary_title chunks found after 10s for post_id={post_id}"
+    )
+    logger.info(f"Found {len(summary_chunks)} summary_title chunks for post_id={post_id}")
+
+    # Step 4: Verify chunk text contains Title and Summary prefixes
+    for chunk in summary_chunks:
+        text = chunk["text"]
+        assert "Title:" in text, f"Chunk text should contain 'Title:', got: {text!r}"
+        assert "Summary:" in text, f"Chunk text should contain 'Summary:', got: {text!r}"
+        assert "Deep Dive into Transformer Architecture" in text
+    logger.info("Summary chunk text format verified: Title and Summary prefixes present")
+
+    # Step 5: Verify chunks.created event with task_type="summary_title"
+    chunks_created_events = await fetch_events(
+        postgres_pool_e2e, "chunks.created", post_id, timeout=5.0
+    )
+    summary_cc_event = None
+    for event in chunks_created_events:
+        if event.get("task_type") == "summary_title":
+            summary_cc_event = event
+            break
+
+    assert summary_cc_event is not None, (
+        f"Expected chunks.created event with task_type='summary_title', "
+        f"got task_types: {[e.get('task_type') for e in chunks_created_events]}"
+    )
+    assert summary_cc_event["chunk_table"] == summary_chunk_table
+    assert summary_cc_event["chunk_count"] == len(summary_chunks)
+    assert len(summary_cc_event["chunk_ids"]) == len(summary_chunks)
+    logger.info(
+        "chunks.created event verified for summary_title: chunk_count=%s",
+        summary_cc_event["chunk_count"],
+    )
+
+    # Step 6: Poll for summary_title embeddings to be written.
+    # Qwen3-0.6B is the third queue in GPU worker priority order (after bge-base and bge-small),
+    # so we allow extra time: bge-base load (~12s) + bge-small load (~5s) + qwen3 load (~60s)
+    # on first run where the model is not yet cached in the container.
+    summary_embeddings = []
+    for attempt in range(240):  # 120s max wait
+        async with postgres_pool_e2e.acquire() as conn:
+            rows = await conn.fetch(
+                f"""
+                SELECT id, embedding FROM {summary_chunk_table}
+                WHERE post_id = $1 AND embedding IS NOT NULL
+                """,
+                post_id,
+            )
+            if len(rows) == len(summary_chunks):
+                summary_embeddings = rows
+                break
+        await asyncio.sleep(0.5)
+
+    assert len(summary_embeddings) == len(summary_chunks), (
+        f"Expected {len(summary_chunks)} summary embeddings, found {len(summary_embeddings)}"
+    )
+    logger.info(f"All {len(summary_embeddings)} summary_title chunks have embeddings")
+
+    # Step 7: Verify embedding.completed event with Qwen/Qwen3-0.6B model
+    embed_completed_events = await fetch_events(
+        postgres_pool_e2e, "embedding.completed", post_id, timeout=5.0
+    )
+    summary_embed_event = None
+    for event in embed_completed_events:
+        if event.get("model_name") == "Qwen/Qwen3-0.6B":
+            summary_embed_event = event
+            break
+
+    assert summary_embed_event is not None, (
+        f"Expected embedding.completed event with model_name='Qwen/Qwen3-0.6B', "
+        f"got models: {[e.get('model_name') for e in embed_completed_events]}"
+    )
+    assert summary_embed_event["chunk_table"] == summary_chunk_table
+    assert len(summary_embed_event["chunk_ids"]) == len(summary_chunks)
+    logger.info(
+        "embedding.completed event verified for summary_title: model=%s chunk_count=%s",
+        summary_embed_event["model_name"],
+        len(summary_embed_event["chunk_ids"]),
+    )
+
+    # Step 8: Verify summary_title embeddings have correct dimension (1024)
+    embedding_dim = 1024  # Qwen/Qwen3-0.6B dimension
+    for row in summary_embeddings:
+        raw = row["embedding"]
+        assert raw is not None, "Summary embedding should not be null"
+        embedding = json.loads(raw) if isinstance(raw, str) else list(raw)
+        assert len(embedding) == embedding_dim, (
+            f"Summary embedding dimension should be {embedding_dim}, got {len(embedding)}"
+        )
+        # pgvector serialises exact-zero dimensions as "0" (no decimal point),
+        # so json.loads produces int for those values — accept both int and float.
+        assert all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in embedding), (
+            "Summary embedding should contain numeric values"
+        )
+
+    logger.info("Summary title embedding pipeline test completed successfully")

@@ -24,6 +24,24 @@ The two layers are kept deliberately separate:
 | Orchestration | K3s (lightweight Kubernetes) | Docker Compose |
 | Observability | Prometheus + Grafana + OpenTelemetry | Optional / debug mode |
 
+
+
+# Event Driven Task Loop
+
+**Event driven architecture at its heart is the decoupling from direct cause and event to a system of ledging events and letting 'anyone' whos interested react to those events they care about. This is a powerful pattern for building distributed systems as it allows for much better modularity, scalability, and resilience.**
+
+By adding a second layer, a message queue, we gain the benefits of routing, retries, backpressure, and dead letter queues for failed tasks. This allows us to build a more robust and scalable system where work can be distributed across multiple workers and scaled independently based on the load and resource requirements of different tasks.
+
+This is a clear distiction of roles. Event have no concern of what happens after and tasks give the benefits mentioned above
+
+The core flow of the system is an event-driven task loop. Producers emit events to the event log. Dispatchers listen for specific events and translate them into tasks which are published to the task queue. Workers consume tasks from the task queue, do the actual work, and can emit new events back to the event log to trigger further processing. This creates a decoupled, asynchronous flow where producers and consumers dont need to know about each other, and where work can be distributed across multiple workers and scaled independently.
+
+This decoupled, event-driven architecture allows for better modularity, scalability, and resilience. Also also makes testing individual components easier, since they can be tested in isolation with mocked dependencies and simulated events with expected event outcomes.
+
+<p align="center">
+    <img src="docs/images/Event%20Task%20Layers.png" alt="Two Layer Event Task Flow" width="60%">
+</p>
+
 ## Architecture at a Glance
 
 ```

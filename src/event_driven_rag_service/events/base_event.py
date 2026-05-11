@@ -27,7 +27,13 @@ class BaseEvent(BaseModel):
     occurred_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     # Distributed tracing
+    # trace_id: the 32-char hex W3C trace ID — shared across the entire pipeline
+    #   for one user action (one HTTP request → all downstream events and tasks).
+    # parent_span_id: the 16-char hex span ID of the span that published this event.
+    #   Downstream services use this to create a proper parent→child span rather
+    #   than an unlinked sibling.  Without it, Jaeger shows the spans flat.
     trace_id: Optional[str] = None
+    parent_span_id: Optional[str] = None
 
     # Optional correlation (group related events) todo: comeback to and decide if we need
     correlation_id: Optional[str] = None

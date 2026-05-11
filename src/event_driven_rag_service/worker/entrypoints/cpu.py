@@ -24,6 +24,7 @@ import asyncpg
 import pika.exceptions
 
 from event_driven_rag_service.config.settings import settings
+from event_driven_rag_service.infrastructure.observability import setup_observability
 from event_driven_rag_service.infrastructure.event_bus import create_event_bus
 from event_driven_rag_service.repository.post_repository import PostRepository
 from event_driven_rag_service.repository.chunk_repository import ChunkRepository
@@ -33,12 +34,10 @@ from event_driven_rag_service.worker.cpu_search_worker import CpuSearchWorker
 from event_driven_rag_service.handlers.chunk_handler import ChunkPostHandler
 from event_driven_rag_service.handlers.search_handler import SearchHandler
 
-logger = logging.getLogger(__name__)
+# Replace logging.basicConfig() — routes all stdlib logging.getLogger() calls through structlog.
+setup_observability("rag-cpu-worker")
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
+logger = logging.getLogger(__name__)
 
 
 async def _setup():
@@ -106,16 +105,16 @@ def main() -> None:
         version_checker=chunk_repo,
         event_log=event_bus,
     )
-    search_handler = SearchHandler(
-        job_store=job_repo,
-        chunk_searcher=chunk_repo,
-        event_log=event_bus,
-    )
-
     chunk_worker = CpuChunkWorker(
         rabbitmq_url=settings.rabbitmq_url,
         handler=chunk_handler,
         loop=loop,
+    )
+
+    search_handler = SearchHandler(
+        job_store=job_repo,
+        chunk_searcher=chunk_repo,
+        event_log=event_bus,
     )
     search_worker = CpuSearchWorker(
         rabbitmq_url=settings.rabbitmq_url,

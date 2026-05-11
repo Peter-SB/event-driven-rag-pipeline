@@ -1,4 +1,4 @@
-"""Integration tests for the chunk pipeline end-to-end flow.
+﻿"""Integration tests for the chunk pipeline end-to-end flow.
 
 Tests the complete flow with real infrastructure (Postgres testcontainer,
 RabbitMQ testcontainer, live PostgresEventBus, real dispatchers).
@@ -198,7 +198,7 @@ async def test_chunk_table_created_lazily_on_first_task(clean_pipeline_tables):
         task_type="body",
         post_id=102,
         post_table=post_table,
-        embed_model="bge-base-v1.5",
+        embed_model="BAAI/bge-base-en-v1.5",
     )
 
     chunk_ids = await handler.handle(task)
@@ -249,7 +249,7 @@ async def test_idempotency_no_duplicate_chunks_on_rerun(clean_pipeline_tables):
         task_type="body",
         post_id=103,
         post_table=post_table,
-        embed_model="bge-base-v1.5",
+        embed_model="BAAI/bge-base-en-v1.5",
     )
 
     # First run
@@ -292,7 +292,7 @@ async def test_summary_title_task_handled(clean_pipeline_tables):
     postgres_pool: asyncpg.Pool = fixtures["postgres_pool"]
     post_repo: PostRepository = fixtures["post_repo"]
     post_table: str = fixtures["post_table"]
-    chunk_table_title: str = "posts_pipeline_test_chunks_summary_title_bge_base_v1_5"
+    chunk_table_title: str = "posts_pipeline_test_chunks_summary_title_baai_bge_base_en_v1_5"
 
     bus = await _setup_bus(postgres_pool)
 
@@ -317,7 +317,7 @@ async def test_summary_title_task_handled(clean_pipeline_tables):
         task_type="summary_title",
         post_id=104,
         post_table=post_table,
-        embed_model="bge-base-v1.5",
+        embed_model="BAAI/bge-base-en-v1.5",
     )
 
     chunk_ids = await handler.handle(task)
@@ -410,7 +410,7 @@ async def test_summary_title_chunk_text_format_in_db(clean_pipeline_tables):
     _, _ = await post_repo.upsert(post, post_table)
 
     # Create handler for summary_title chunks
-    chunk_table = "posts_pipeline_test_chunks_summary_title_bge_base_v1_5"
+    chunk_table = "posts_pipeline_test_chunks_summary_title_baai_bge_base_en_v1_5"
     chunk_repo = ChunkRepository(postgres_pool, table_name=chunk_table, vector_dim=768)
     handler = ChunkPostHandler(
         post_fetcher=post_repo,
@@ -424,7 +424,7 @@ async def test_summary_title_chunk_text_format_in_db(clean_pipeline_tables):
         task_type="summary_title",
         post_id=200,
         post_table=post_table,
-        embed_model="bge-base-v1.5",
+        embed_model="BAAI/bge-base-en-v1.5",
     )
 
     chunk_ids = await handler.handle(task)
@@ -473,7 +473,7 @@ async def test_summary_title_single_chunk_for_typical_length(clean_pipeline_tabl
     )
     _, _ = await post_repo.upsert(post, post_table)
 
-    chunk_table = "posts_pipeline_test_chunks_summary_title_bge_base_v1_5"
+    chunk_table = "posts_pipeline_test_chunks_summary_title_baai_bge_base_en_v1_5"
     chunk_repo = ChunkRepository(postgres_pool, table_name=chunk_table, vector_dim=768)
     handler = ChunkPostHandler(
         post_fetcher=post_repo,
@@ -486,7 +486,7 @@ async def test_summary_title_single_chunk_for_typical_length(clean_pipeline_tabl
         task_type="summary_title",
         post_id=201,
         post_table=post_table,
-        embed_model="bge-base-v1.5",
+        embed_model="BAAI/bge-base-en-v1.5",
     )
 
     chunk_ids = await handler.handle(task)

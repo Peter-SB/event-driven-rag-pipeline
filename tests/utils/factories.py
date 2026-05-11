@@ -1,4 +1,4 @@
-"""Shared test utilities: in-memory fakes and data factories.
+﻿"""Shared test utilities: in-memory fakes and data factories.
 
 Kept in tests/utils/ so they can be imported by both unit and integration
 conftest files without any circular dependency.
@@ -104,6 +104,8 @@ def make_post_synced_event(
     fields_changed: list[str] | None = None,
     updated_at: datetime | None = None,
     post_table: str = "posts", # todo: come back and check this table nameing is correct
+    trace_id: str | None = None,
+    parent_span_id: str | None = None,
 ) -> dict:
     """Build a post.synced event payload dict."""
     return {
@@ -116,7 +118,8 @@ def make_post_synced_event(
         "has_summary": has_summary,
         "fields_changed": fields_changed if fields_changed is not None else [],
         "updated_at": (updated_at or _BASE_TS).isoformat(),
-        "trace_id": None,
+        "trace_id": trace_id,
+        "parent_span_id": parent_span_id,
     }
 
 
@@ -144,8 +147,10 @@ def make_chunks_created_event(
     post_id: int = 1,
     chunk_ids: list[str] | None = None,
     task_type: str = "body",
-    chunk_table: str = "posts_chunks_body_bge_base_v1_5",
+    chunk_table: str = "posts_chunks_body_baai_bge_base_en_v1_5",
     post_table: str = "posts",
+    trace_id: str | None = None,
+    parent_span_id: str | None = None,
 ) -> dict:
     """Build a chunks.created event payload dict."""
     return {
@@ -156,7 +161,8 @@ def make_chunks_created_event(
         "chunk_table": chunk_table,
         "chunk_count": len(chunk_ids) if chunk_ids else 2,
         "task_type": task_type,
-        "trace_id": None,
+        "trace_id": trace_id,
+        "parent_span_id": parent_span_id,
         "created_at": _BASE_TS.isoformat(),
     }
 

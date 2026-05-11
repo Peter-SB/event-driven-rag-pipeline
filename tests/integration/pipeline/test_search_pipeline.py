@@ -1,4 +1,4 @@
-"""Integration tests for the full search pipeline.
+﻿"""Integration tests for the full search pipeline.
 
 Flow under test
 ---------------
@@ -36,10 +36,10 @@ from tests.utils.factories import make_post, make_chunks_created_event
 
 pytestmark = pytest.mark.integration
 
-_MODEL_NAME = "bge-base-v1.5"
+_MODEL_NAME = "BAAI/bge-base-en-v1.5"
 _VECTOR_DIM = 768
 _POST_TABLE = "posts_pipeline_search_test"
-_CHUNK_TABLE = f"{_POST_TABLE}_chunks_body_bge_base_v1_5"
+_CHUNK_TABLE = f"{_POST_TABLE}_chunks_body_baai_bge_base_en_v1_5"
 
 
 # ---------------------------------------------------------------------------

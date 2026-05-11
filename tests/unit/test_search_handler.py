@@ -1,4 +1,4 @@
-"""Unit tests for SearchHandler.
+﻿"""Unit tests for SearchHandler.
 
 Uses in-memory fakes for all dependencies — no Postgres, no RabbitMQ.
 """
@@ -61,14 +61,14 @@ def _make_job(
     job_id: str = "job-1",
     embedding: list[float] | None = None,
     k: int = 5,
-    chunks_table: str = "posts_main_chunks_body_bge_base_v1_5",
+    chunks_table: str = "posts_main_chunks_body_baai_bge_base_en_v1_5",
 ) -> Dict[str, Any]:
     return {
         "id": job_id,
         "status": "embedding",
         "query": "test query",
         "k": k,
-        "embedding_profile": "bge-base-v1.5",
+        "embedding_profile": "BAAI/bge-base-en-v1.5",
         "chunks_table": chunks_table,
         "embedding": embedding or [0.1] * 768,
         "results": None,
@@ -160,7 +160,7 @@ async def test_handle_search_passes_correct_params_to_searcher():
     """SearchHandler should pass chunk_table, embedding, and k to the searcher."""
     k = 7
     embedding = [0.5] * 768
-    chunks_table = "posts_work_chunks_body_bge_base_v1_5"
+    chunks_table = "posts_work_chunks_body_baai_bge_base_en_v1_5"
     job = _make_job(embedding=embedding, k=k, chunks_table=chunks_table)
 
     job_store = FakeSearchJobStore(job=job)

@@ -1,4 +1,4 @@
-"""Integration tests for the embed pipeline end-to-end flow.
+﻿"""Integration tests for the embed pipeline end-to-end flow.
 
 Tests the complete flow with real infrastructure (Postgres testcontainer,
 RabbitMQ testcontainer, live PostgresEventBus, real dispatchers).
@@ -44,7 +44,7 @@ from tests.utils.factories import make_post, make_chunks_created_event
 
 pytestmark = pytest.mark.integration
 
-_MODEL_NAME = "bge-base-v1.5"
+_MODEL_NAME = "BAAI/bge-base-en-v1.5"
 _VECTOR_DIM = 768
 
 

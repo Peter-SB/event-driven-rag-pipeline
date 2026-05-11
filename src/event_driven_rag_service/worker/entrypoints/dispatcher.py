@@ -21,18 +21,17 @@ import aio_pika
 import asyncpg
 
 from event_driven_rag_service.config.settings import settings
+from event_driven_rag_service.infrastructure.observability import setup_observability
 from event_driven_rag_service.dispatchers.post_dispatcher import PostDispatcher
 from event_driven_rag_service.dispatchers.chunk_dispatcher import ChunkDispatcher
 from event_driven_rag_service.dispatchers.search_dispatcher import SearchDispatcher
 from event_driven_rag_service.dispatchers.embedding_dispatcher import EmbeddingDispatcher
 from event_driven_rag_service.infrastructure.event_bus import create_event_bus
 
-logger = logging.getLogger(__name__)
+# Replace logging.basicConfig() — routes all stdlib logging.getLogger() calls through structlog.
+setup_observability("rag-dispatcher")
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
+logger = logging.getLogger(__name__)
 
 
 async def _setup():
@@ -49,7 +48,8 @@ async def _setup():
         await event_bus.setup_tables()
     logger.info("Event bus ready (type=%s)", event_bus.__class__.__name__)
 
-    rmq = await aio_pika.connect_robust(settings.rabbitmq_url)
+    # timeout=30s to allow RabbitMQ time to fully initialize after healthcheck passes
+    rmq = await aio_pika.connect_robust(settings.rabbitmq_url, timeout=30.0)
     logger.info("RabbitMQ connection established")
 
     return pool, event_bus, rmq
