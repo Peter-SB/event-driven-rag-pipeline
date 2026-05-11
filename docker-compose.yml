@@ -51,8 +51,10 @@ services:
     ports:
       - "${RABBITMQ_PORT:-5672}:5672"
       - "${RABBITMQ_MGMT_PORT:-15672}:15672"   # Management UI
+      - "15692:15692"                           # Prometheus metrics
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
+      - ./config/rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
     networks:
       - rag
     healthcheck:

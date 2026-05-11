@@ -2,14 +2,25 @@
 # Scrapes metrics from the OTEL Collector (which receives from SDK via gRPC)
 
 global:
-  scrape_interval: 15s
-  evaluation_interval: 15s
+  scrape_interval: 5s # Low for development; increase for production to reduce load
+  evaluation_interval: 5s
 
 scrape_configs:
   # Scrape metrics from OTEL Collector's Prometheus exporter
   - job_name: "otel-collector"
     static_configs:
       - targets: ["otel-collector:9464"]
+
+  # RabbitMQ aggregate metrics (via built-in rabbitmq_prometheus plugin)
+  - job_name: "rabbitmq"
+    static_configs:
+      - targets: ["rabbitmq:15692"]
+
+  # RabbitMQ per-queue/per-channel metrics — separate endpoint required
+  - job_name: "rabbitmq-per-object"
+    metrics_path: /metrics/per-object
+    static_configs:
+      - targets: ["rabbitmq:15692"]
 
   # Monitor Prometheus itself
   - job_name: "prometheus"
