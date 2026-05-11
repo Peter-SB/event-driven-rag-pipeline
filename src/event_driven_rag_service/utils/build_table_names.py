@@ -5,7 +5,7 @@ def sanitize_model_name(model: str) -> str:
     E.g., "bge-base-v1.5" → "bge_base_v1_5"
     """
     model = model.lower()
-    return model.replace("-", "_").replace(".", "_")
+    return model.replace("/", "_").replace("-", "_").replace(".", "_")
 
 def build_chunk_table_name(post_table: str, task_type: str, model: str) -> str:
     """Build a consistent table name for storing chunks.

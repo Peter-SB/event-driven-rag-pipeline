@@ -1,4 +1,4 @@
-"""Integration tests for SearchJobRepository against a real Postgres testcontainer."""
+﻿"""Integration tests for SearchJobRepository against a real Postgres testcontainer."""
 from __future__ import annotations
 
 import pytest
@@ -8,8 +8,8 @@ from event_driven_rag_service.repository.search_job_repository import SearchJobR
 
 pytestmark = pytest.mark.integration
 
-_CHUNKS_TABLE = "posts_test_chunks_body_bge_base_v1_5"
-_EMBEDDING_PROFILE = "bge-base-v1.5"
+_CHUNKS_TABLE = "posts_test_chunks_body_baai_bge_base_en_v1_5"
+_EMBEDDING_PROFILE = "BAAI/bge-base-en-v1.5"
 _LIBRARY_ID = "testlib"
 
 
@@ -140,7 +140,7 @@ async def test_save_batch_handles_query_row(job_repo: SearchJobRepository):
 async def test_save_batch_ignores_chunk_rows(job_repo: SearchJobRepository):
     """save_batch should silently ignore rows with chunk_id (those go to ChunkRepository)."""
     await job_repo.save_batch([
-        {"chunk_id": "abc", "model_name": "bge-base-v1.5", "embedding": [0.1], "chunk_table": "t"}
+        {"chunk_id": "abc", "model_name": "BAAI/bge-base-en-v1.5", "embedding": [0.1], "chunk_table": "t"}
     ])
     # No exception raised — chunk rows are quietly ignored
 

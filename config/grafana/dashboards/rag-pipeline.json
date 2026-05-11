@@ -352,6 +352,76 @@
       }
     },
     {
+      "id": 15,
+      "title": "Error Log Rate (1m)",
+      "type": "stat",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 16,
+        "y": 28
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "expr": "sum(rate({service=~\"api|cpu-worker|gpu-worker|dispatcher\"} | json | level=\"error\" [1m])) * 60",
+          "refId": "A",
+          "legendFormat": "errors/min"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "fixedColor": "red",
+            "mode": "fixed"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 5
+              }
+            ]
+          },
+          "links": [
+            {
+              "title": "View error logs",
+              "url": "/explore?orgId=1&left={\"datasource\":\"loki\",\"queries\":[{\"refId\":\"A\",\"expr\":\"{service=~\\\"api|cpu-worker|gpu-worker|dispatcher\\\"} | json | level=\\\"error\\\"\"}],\"range\":{\"from\":\"${__from:date:iso}\",\"to\":\"${__to:date:iso}\"}}",
+              "targetBlank": false
+            }
+          ]
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "background",
+        "graphMode": "area"
+      }
+    },
+    {
       "id": 10,
       "title": "Search Jobs (per minute)",
       "type": "timeseries",
@@ -431,7 +501,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 40
+        "y": 56
       },
       "targets": [
         {
@@ -465,7 +535,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 40
+        "y": 56
       },
       "targets": [
         {
@@ -492,6 +562,176 @@
       }
     },
     {
+      "id": 15,
+      "title": "GPU Encode Time P95 (by model)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 40
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, model) (rate(rag_embedding_encode_seconds_bucket[1m])))",
+          "refId": "A",
+          "legendFormat": "{{model}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "lineWidth": 2
+          }
+        }
+      }
+    },
+    {
+      "id": 16,
+      "title": "Batch Size (avg chunks per encode)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 40
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "avg by (model) (rag_embedding_batch_size)",
+          "refId": "A",
+          "legendFormat": "{{model}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2
+          }
+        }
+      }
+    },
+    {
+      "id": 17,
+      "title": "Per-Text Encode Time P95",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 40
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, model) (rate(rag_embedding_seconds_per_text_bucket[1m])))",
+          "refId": "A",
+          "legendFormat": "{{model}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "lineWidth": 2
+          }
+        }
+      }
+    },
+    {
+      "id": 18,
+      "title": "Model Load Time (by model)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 48
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, model) (rate(rag_model_load_seconds_bucket[1m])))",
+          "refId": "A",
+          "legendFormat": "{{model}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "lineWidth": 2
+          }
+        }
+      }
+    },
+    {
+      "id": 19,
+      "title": "Model Unload Time (GC overhead)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 48
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, model) (rate(rag_model_unload_seconds_bucket[1m])))",
+          "refId": "A",
+          "legendFormat": "{{model}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "lineWidth": 2
+          }
+        }
+      }
+    },
+    {
       "id": 14,
       "title": "Pipeline Events (Live Logs)",
       "type": "logs",
@@ -500,10 +740,10 @@
         "uid": "loki"
       },
       "gridPos": {
-        "h": 16,
+        "h": 24,
         "w": 24,
         "x": 0,
-        "y": 48
+        "y": 64
       },
       "targets": [
         {

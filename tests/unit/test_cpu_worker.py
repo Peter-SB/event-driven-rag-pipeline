@@ -1,4 +1,4 @@
-"""Unit tests for CpuChunkWorker.
+﻿"""Unit tests for CpuChunkWorker.
 
 Tests the sync/async bridge that connects the sync RabbitMQ consumer (pika)
 to the async handler (asyncpg-based repositories).
@@ -45,7 +45,7 @@ def test_process_deserializes_payload_and_calls_handler():
             "task_type": "body",
             "post_id": 42,
             "post_table": "posts_main",
-            "embed_model": "bge-base-v1.5",
+            "embed_model": "BAAI/bge-base-en-v1.5",
             "trace_id": None,
             "source_event_id": None,
             "analysis_text": None,
@@ -59,7 +59,7 @@ def test_process_deserializes_payload_and_calls_handler():
         assert called_task.post_id == 42
         assert called_task.task_type == "body"
         assert called_task.post_table == "posts_main"
-        assert called_task.embed_model == "bge-base-v1.5"
+        assert called_task.embed_model == "BAAI/bge-base-en-v1.5"
     finally:
         loop.close()
 
@@ -81,7 +81,7 @@ def test_process_propagates_handler_exception():
             "task_type": "body",
             "post_id": 1,
             "post_table": "posts_main",
-            "embed_model": "bge-base-v1.5",
+            "embed_model": "BAAI/bge-base-en-v1.5",
             "trace_id": None,
             "source_event_id": None,
             "analysis_text": None,
@@ -111,7 +111,7 @@ def test_process_works_with_fresh_event_loop():
         "task_type": "body",
         "post_id": 2,
         "post_table": "posts_work",
-        "embed_model": "bge-base-v1.5",
+        "embed_model": "BAAI/bge-base-en-v1.5",
         "trace_id": None,
         "source_event_id": None,
         "analysis_text": None,
@@ -140,7 +140,7 @@ def test_process_with_summary_title_task():
             "task_type": "summary_title",
             "post_id": 100,
             "post_table": "posts_main",
-            "embed_model": "bge-base-v1.5",
+            "embed_model": "BAAI/bge-base-en-v1.5",
             "trace_id": None,
             "source_event_id": None,
             "analysis_text": None,
@@ -172,7 +172,7 @@ def test_process_with_analysis_task():
             "task_type": "analysis",
             "post_id": 200,
             "post_table": "posts_main",
-            "embed_model": "qwen3-0.6b",
+            "embed_model": "Qwen/Qwen3-0.6B",
             "trace_id": None,
             "source_event_id": None,
             "analysis_text": analysis_text,
@@ -204,7 +204,7 @@ def test_process_rejects_malformed_payload():
             "task_type": "body",
             # post_id missing!
             "post_table": "posts_main",
-            "embed_model": "bge-base-v1.5",
+            "embed_model": "BAAI/bge-base-en-v1.5",
         }
 
         from pydantic import ValidationError

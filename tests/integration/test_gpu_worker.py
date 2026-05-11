@@ -1,4 +1,4 @@
-"""Integration tests for GPU embedding worker.
+﻿"""Integration tests for GPU embedding worker.
 
 These tests verify GPU worker behavior against a real Postgres database.
 They use MOCK_EMBEDDINGS=1 to avoid needing an actual GPU.
@@ -51,7 +51,7 @@ async def test_gpu_worker_startup_creates_chunk_tables(postgres_pool: asyncpg.Po
 @pytest.mark.asyncio
 async def test_gpu_worker_embeds_chunks_and_persists_vectors(postgres_pool: asyncpg.Pool):
     """Verify chunks are stored and embedding vectors can be persisted."""
-    table_name = "chunks_body_bge_base_v1_5"
+    table_name = "chunks_body_baai_bge_base_en_v1_5"
     repo = ChunkRepository(postgres_pool, table_name=table_name, vector_dim=768)
 
     # Setup: ensure table exists

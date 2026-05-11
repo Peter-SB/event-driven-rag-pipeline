@@ -5,6 +5,7 @@ from datetime import datetime, UTC
 import aio_pika
 
 from event_driven_rag_service.config import consumer_groups
+from event_driven_rag_service.config.embedding_config import EMBED_CONFIGS
 from event_driven_rag_service.infrastructure.event_bus import EventBusBase
 from event_driven_rag_service.infrastructure.metrics import set_queue_lag
 from event_driven_rag_service.tasks.embed_task import EmbedTask
@@ -24,9 +25,7 @@ def _record_queue_lag(event: dict, queue_name: str) -> None:
             pass
 
 
-# Must match the model used for chunk embeddings so vectors are in the same space.
-# If you change this, update ChunkDispatcher._DEFAULT_EMBED_MODEL too.
-_QUERY_EMBED_MODEL = "bge-base-v1.5"
+_QUERY_EMBED_CONFIG = EMBED_CONFIGS["query"]
 
 
 class SearchDispatcher:
@@ -53,14 +52,14 @@ class SearchDispatcher:
             _record_queue_lag(event, "search")
             task = EmbedTask(
                 task_type="query",
-                model_name=_QUERY_EMBED_MODEL,
+                model_name=_QUERY_EMBED_CONFIG.model,
                 query=event["query"],
                 query_job_id=event["query_job_id"],
                 trace_id=event.get("trace_id"),
             )
             await embedding_ex.publish(
                 aio_pika.Message(task.model_dump_json().encode()),
-                routing_key=f"gpu.embed.{_QUERY_EMBED_MODEL}",
+                routing_key=_QUERY_EMBED_CONFIG.queue,
             )
             logger.debug(
                 "SearchDispatcher: dispatched query embed task for job_id=%s",

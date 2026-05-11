@@ -11,6 +11,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY pyproject.toml .
 RUN pip install --no-cache-dir -e .
 
+# Optional: pre-download embedding models into the image layer.
+# Set PREDOWNLOAD_MODELS=true in the gpu-worker build args to bake models in
+# so the worker starts with zero network downloads.
+# Placed here (after pip install, before COPY src/) so Docker caches this layer
+# until Python dependencies change — not on every source file edit.
+ARG PREDOWNLOAD_MODELS=false
+RUN if [ "$PREDOWNLOAD_MODELS" = "true" ]; then \
+    python -c "\
+from sentence_transformers import SentenceTransformer; \
+SentenceTransformer('BAAI/bge-base-en-v1.5'); \
+SentenceTransformer('BAAI/bge-small-en-v1.5'); \
+SentenceTransformer('Qwen/Qwen3-0.6B', trust_remote_code=True); \
+print('Embedding models cached.')"; \
+fi
+
 # Copy source
 COPY src/ src/
 

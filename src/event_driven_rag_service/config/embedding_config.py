@@ -24,9 +24,9 @@ CHUNK_CONFIG = ChunkConfig(
 # Keyed by task_type — determines which model embeds each chunk type.
 # "summary_title" is treated the same as "summary" for embedding purposes.
 EMBED_CONFIGS: dict[str, EmbedConfig] = {
-    "body":          EmbedConfig(model="bge-base-v1.5", queue="gpu.embed.bge-base-v1.5", dim=768),
-    "summary_title": EmbedConfig(model="bge-base-v1.5", queue="gpu.embed.bge-base-v1.5", dim=768),
-    "title":         EmbedConfig(model="bge-small-en-v1.5", queue="gpu.embed.bge-small-en-v1.5", dim=384),
-    "query":         EmbedConfig(model="bge-base-v1.5", queue="gpu.embed.bge-base-v1.5", dim=768),
-    "analysis":      EmbedConfig(model="qwen3-0.6b",    queue="gpu.embed.qwen3-0.6b",    dim=1024),
+    "body":          EmbedConfig(model="BAAI/bge-base-en-v1.5",     queue="gpu.embed.bge-base-en-v1.5",     dim=768),
+    "query":         EmbedConfig(model="BAAI/bge-base-en-v1.5",     queue="gpu.embed.bge-base-en-v1.5",     dim=768),
+    "title":         EmbedConfig(model="BAAI/bge-small-en-v1.5",    queue="gpu.embed.bge-small-en-v1.5",    dim=384),
+    "summary_title": EmbedConfig(model="Qwen/Qwen3-0.6B",           queue="gpu.embed.qwen3-0.6b",           dim=1024),
+    "analysis":      EmbedConfig(model="Qwen/Qwen3-0.6B",           queue="gpu.embed.qwen3-0.6b",           dim=1024),
 }

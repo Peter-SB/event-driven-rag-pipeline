@@ -1,4 +1,4 @@
-"""Tests for ChunkDispatcher routing logic.
+﻿"""Tests for ChunkDispatcher routing logic.
 
 ChunkDispatcher reads chunks.created events from the event log and publishes
 EmbedTask messages to the RabbitMQ embedding exchange.
@@ -91,7 +91,7 @@ async def test_embed_task_uses_correct_model_for_title(fake_bus, fake_exchange):
 
     task = _published_embed_tasks(fake_exchange)[0]
     assert task.model_name == EMBED_CONFIGS["title"].model
-    assert task.model_name == "bge-small-en-v1.5"
+    assert task.model_name == "BAAI/bge-small-en-v1.5"
 
 
 # ---------------------------------------------------------------------------
@@ -121,7 +121,7 @@ async def test_routing_key_contains_title_model_name(fake_bus, fake_exchange):
 
     # Title routing key should contain bge-small-en-v1.5
     assert len(fake_exchange.all_routing_keys) == 1
-    assert "bge-small-en-v1.5" in fake_exchange.all_routing_keys[0]
+    assert "BAAI/bge-small-en-v1.5" in fake_exchange.all_routing_keys[0]
 
 
 # ---------------------------------------------------------------------------

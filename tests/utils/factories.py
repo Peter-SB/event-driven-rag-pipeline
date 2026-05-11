@@ -1,4 +1,4 @@
-"""Shared test utilities: in-memory fakes and data factories.
+﻿"""Shared test utilities: in-memory fakes and data factories.
 
 Kept in tests/utils/ so they can be imported by both unit and integration
 conftest files without any circular dependency.
@@ -147,7 +147,7 @@ def make_chunks_created_event(
     post_id: int = 1,
     chunk_ids: list[str] | None = None,
     task_type: str = "body",
-    chunk_table: str = "posts_chunks_body_bge_base_v1_5",
+    chunk_table: str = "posts_chunks_body_baai_bge_base_en_v1_5",
     post_table: str = "posts",
     trace_id: str | None = None,
     parent_span_id: str | None = None,

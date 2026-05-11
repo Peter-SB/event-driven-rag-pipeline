@@ -1,4 +1,4 @@
-"""E2E tests for the search pipeline against the running Docker Compose stack.
+﻿"""E2E tests for the search pipeline against the running Docker Compose stack.
 
 Requires the full stack running (including all dispatchers and workers):
 
@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 os.environ.setdefault("MOCK_EMBEDDINGS", "1")
 
 _E2E_LIBRARY = "searchtest"
-_CHUNK_TABLE = f"posts_{_E2E_LIBRARY}_chunks_body_bge_base_v1_5"
+_CHUNK_TABLE = f"posts_{_E2E_LIBRARY}_chunks_body_baai_bge_base_en_v1_5"
 
 
 # ---------------------------------------------------------------------------

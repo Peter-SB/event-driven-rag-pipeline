@@ -1,4 +1,4 @@
-"""Integration test fixtures.
+﻿"""Integration test fixtures.
 
 Starts real Postgres and RabbitMQ containers via testcontainers.  Each service
 gets a random ephemeral host port assigned by the OS, so there is no risk of
@@ -111,7 +111,7 @@ async def clean_posts_table(postgres_pool: asyncpg.Pool):
 async def clean_chunk_table(postgres_pool: asyncpg.Pool):
     """Create and empty a test chunk table (bge-base-v1.5 dim=768)."""
     from event_driven_rag_service.repository.chunk_repository import ChunkRepository
-    table = "test_chunks_body_bge_base_v1_5"
+    table = "test_chunks_body_baai_bge_base_en_v1_5"
     repo = ChunkRepository(postgres_pool, table_name=table, vector_dim=768)
     await repo.ensure_table()
     async with postgres_pool.acquire() as conn:
@@ -134,7 +134,7 @@ async def clean_pipeline_tables(
     from event_driven_rag_service.repository.chunk_repository import ChunkRepository
 
     POST_TABLE = "posts_pipeline_test"
-    CHUNK_TABLE = "posts_pipeline_test_chunks_body_bge_base_v1_5"
+    CHUNK_TABLE = "posts_pipeline_test_chunks_body_baai_bge_base_en_v1_5"
 
     post_repo = PostRepository(postgres_pool, table_name=POST_TABLE)
     await post_repo.ensure_table()

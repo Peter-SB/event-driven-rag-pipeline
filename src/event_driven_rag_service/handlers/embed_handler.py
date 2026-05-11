@@ -25,8 +25,10 @@ from event_driven_rag_service.infrastructure.event_bus import EventBusBase
 from event_driven_rag_service.infrastructure.metrics import (
     record_embeddings_generated,
     record_embedding_latency,
+    record_encode_latency,
     record_failure,
 )
+from event_driven_rag_service.exceptions import ChunkTableNotFoundError
 from event_driven_rag_service.tasks.embed_task import EmbedTask
 from event_driven_rag_service.utils.tracing_utils import extract_trace_context
 
@@ -120,6 +122,13 @@ class EmbedHandler:
 
         Returns (ok_tasks, failed_tasks).
         """
+        total_chunks = sum(len(t.chunk_ids or []) for t in tasks)
+        logger.info(
+            "EmbedHandler.embed_chunks: starting batch (tasks=%d total_chunks=%d model=%s)",
+            len(tasks),
+            total_chunks,
+            model_name,
+        )
         start_time = time.time()
 
         # Use the first task's trace context as the parent span.
@@ -165,6 +174,14 @@ class EmbedHandler:
                 continue
             try:
                 pairs = await self._chunks.fetch_texts(task.chunk_ids, task.chunk_table)
+            except ChunkTableNotFoundError:
+                logger.warning(
+                    "EmbedHandler: chunk table %r does not exist — skipping task (task_id=%s). "
+                    "The CPU worker likely failed before creating the table.",
+                    task.chunk_table,
+                    task.task_id,
+                )
+                continue
             except Exception:
                 logger.exception(
                     "EmbedHandler: fetch_texts failed (chunk_table=%s, task_id=%s) — failing task",
@@ -177,14 +194,30 @@ class EmbedHandler:
                 triples.append((task, chunk_id, text))
 
         if not triples:
+            logger.info(
+                "EmbedHandler: no chunks to encode after fetch (fetch_failed=%d)",
+                len(fetch_failed),
+            )
             return [t for t in tasks if t not in fetch_failed], fetch_failed
 
         texts = [t[2] for t in triples]
+        logger.info("EmbedHandler: encoding %d texts with %s", len(texts), encoder.name)
+        encode_start = time.time()
         try:
             vectors = encoder.encode(texts)
         except Exception:
             logger.exception("EmbedHandler: encode() failed — failing entire batch")
             return [], tasks
+        encode_time = time.time() - encode_start
+        record_encode_latency(encode_time, model_name, len(texts))
+        logger.info(
+            "EmbedHandler: encoding complete (texts=%d vectors=%d latency=%.2fs throughput=%.0f texts/s per_text=%.3fs)",
+            len(texts),
+            len(vectors),
+            encode_time,
+            len(texts) / encode_time if encode_time > 0 else 0,
+            encode_time / len(texts) if len(texts) > 0 else 0,
+        )
 
         rows: list[EmbeddingRow] = []
         for i in range(len(triples)):
@@ -204,7 +237,16 @@ class EmbedHandler:
                     triples[i][1],
                     task.post_id,
                 )
+
+        logger.info(
+            "EmbedHandler: persisting %d embedding rows to store",
+            len(rows),
+        )
         await self._embeddings.save_batch(rows)
+        logger.info(
+            "EmbedHandler: persistence complete (rows=%d)",
+            len(rows),
+        )
 
         # Emit one embedding.completed per (post_id, chunk_table) group.
         # Falls back to the first task's trace_id when OTEL is disabled.
@@ -222,6 +264,11 @@ class EmbedHandler:
                 group_meta[key] = (task.post_table, task.chunk_table)
             group_chunks[key].append(chunk_id)
 
+        logger.info(
+            "EmbedHandler: grouped embeddings into %d event(s) by (post_id, chunk_table)",
+            len(group_chunks),
+        )
+
         for key, chunk_ids in group_chunks.items():
             post_table, chunk_table = group_meta[key]
             event = EmbeddingCompletedEvent(
@@ -234,6 +281,13 @@ class EmbedHandler:
                 parent_span_id=parent_span_id,
             )
             await self._event_log.publish(event.event_type, event.to_dict())
+            logger.info(
+                "EmbedHandler: %d chunks embedded and persisted (model=%s post=%s table=%s)",
+                len(chunk_ids),
+                model_name,
+                key[0],
+                chunk_table,
+            )
 
         # Deduplicate: one task may have contributed multiple chunk_ids.
         seen: dict[int, EmbedTask] = {id(t[0]): t[0] for t in triples}
@@ -270,7 +324,11 @@ class EmbedHandler:
                 return True
 
             try:
+                encode_start = time.time()
                 vector = encoder.encode([task.query])[0]
+                encode_time = time.time() - encode_start
+                record_encode_latency(encode_time, model_name, 1)
+
                 await self._embeddings.save_batch(
                     [
                         QueryEmbeddingRow(
@@ -280,6 +338,7 @@ class EmbedHandler:
                         )
                     ]
                 )
+
                 from event_driven_rag_service.utils.tracing_utils import propagate_trace
                 trace_id, parent_span_id = propagate_trace(task.trace_id)
                 event = SearchQueryEmbeddedEvent(

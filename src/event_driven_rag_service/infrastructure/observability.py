@@ -229,9 +229,11 @@ def _configure_logging(otel_enabled: bool, service_name: str) -> None:
 
     # Silence noisy third-party loggers that produce excessive output at INFO.
     # aio_pika and aiormq log every frame; pika logs every heartbeat.
+    # httpx logs every HTTP request (verbose HF model metadata checks).
     logging.getLogger("aio_pika").setLevel(logging.WARNING)
     logging.getLogger("aiormq").setLevel(logging.WARNING)
     logging.getLogger("pika").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 # ---------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-"""Tests for PostDispatcher routing logic.
+﻿"""Tests for PostDispatcher routing logic.
 
 PostDispatcher reads post.synced events and publishes ChunkTask messages
 to RabbitMQ.  These tests use a FakeEventBus and FakeExchange to verify
@@ -227,7 +227,7 @@ async def test_title_task_uses_bge_small_model(fake_bus, fake_exchange):
     title_task = next((t for t in tasks if t.task_type == "title"), None)
     assert title_task is not None
     assert title_task.embed_model == EMBED_CONFIGS["title"].model
-    assert title_task.embed_model == "bge-small-en-v1.5"
+    assert title_task.embed_model == "BAAI/bge-small-en-v1.5"
 
 
 # ---------------------------------------------------------------------------

@@ -40,7 +40,7 @@ BINDINGS: dict[str, list[tuple[str, str]]] = {
     "embedding": [
         # One queue per model — workers bind to their model's queue and stay
         # warm. Model swaps only happen when the queue drains.
-        ("gpu.embed.bge-base-v1.5",         "gpu.embed.bge-base-v1.5"),
+        ("gpu.embed.bge-base-en-v1.5",       "gpu.embed.bge-base-en-v1.5"),
         ("gpu.embed.bge-small-en-v1.5",     "gpu.embed.bge-small-en-v1.5"),
         ("gpu.embed.qwen3-0.6b",            "gpu.embed.qwen3-0.6b"),
     ],

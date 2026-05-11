@@ -36,6 +36,7 @@ from dataclasses import dataclass
 from event_driven_rag_service.tasks.embed_task import EmbedTask
 from event_driven_rag_service.worker.base_worker import BaseWorker
 from event_driven_rag_service.handlers.embed_handler import EmbedHandler, EmbeddingModel
+from event_driven_rag_service.infrastructure.metrics import record_model_unload_time
 
 logger = logging.getLogger(__name__)
 
@@ -134,15 +135,33 @@ class GpuEmbedWorker(BaseWorker):
                 if not raw:
                     continue
 
+                logger.info(
+                    "GpuEmbedWorker: polled %d messages from %s",
+                    len(raw),
+                    queue_name,
+                )
+
                 batch = self._parse_batch(channel, raw)
                 if not batch:
                     continue
+
+                logger.info(
+                    "GpuEmbedWorker: parsed %d valid messages (rejected=%d)",
+                    len(batch),
+                    len(raw) - len(batch),
+                )
 
                 found_work = True
                 idle_since = None
 
                 self._ensure_model(model_name)
                 ok, failed = self._process_batch(batch, model_name)
+
+                logger.info(
+                    "GpuEmbedWorker: batch complete (ok=%d failed=%d)",
+                    len(ok),
+                    len(failed),
+                )
 
                 for msg in ok:
                     self._ack(channel, msg.delivery_tag)
@@ -195,10 +214,15 @@ class GpuEmbedWorker(BaseWorker):
     def _unload_model(self) -> None:
         if self._model is None:
             return
-        logger.info("Unloading model: %s", self._current_model_name)
+        model_name = self._current_model_name or "unknown"
+        logger.info("Unloading model: %s", model_name)
+        unload_start = time.time()
         self._model = None
         self._current_model_name = None
         gc.collect()
+        unload_time = time.time() - unload_start
+        record_model_unload_time(unload_time, model_name)
+        logger.info("Model unloaded: %s (gc_time=%.2fs)", model_name, unload_time)
 
     # ------------------------------------------------------------------
     # Batch processing
@@ -213,6 +237,13 @@ class GpuEmbedWorker(BaseWorker):
 
         chunk_msgs = [m for m in batch if m.task.task_type == "chunk"]
         query_msgs = [m for m in batch if m.task.task_type == "query"]
+
+        logger.info(
+            "GpuEmbedWorker: processing batch split — queries=%d chunks=%d model=%s",
+            len(query_msgs),
+            len(chunk_msgs),
+            model_name,
+        )
 
         ok: list[WorkerMessage] = []
         failed: list[WorkerMessage] = []

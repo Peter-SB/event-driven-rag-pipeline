@@ -1,4 +1,4 @@
-"""Tests for EmbedHandler business logic.
+﻿"""Tests for EmbedHandler business logic.
 
 EmbedHandler is the unit of work extracted from GpuEmbedWorker.
 All tests use in-memory fakes for I/O — no DB or RabbitMQ required.
@@ -118,8 +118,8 @@ async def test_embed_chunks_fetches_and_encodes_texts():
         post_id=1,
         post_table="posts",
         chunk_ids=["chunk-1", "chunk-2"],
-        chunk_table="chunks_body_bge_base_v1_5",
-        model_name="bge-base-v1.5",
+        chunk_table="chunks_body_baai_bge_base_en_v1_5",
+        model_name="BAAI/bge-base-en-v1.5",
     )
     model = MockEmbeddingModel(dim=768)
 
@@ -145,8 +145,8 @@ async def test_embed_chunks_saves_vectors_to_store():
         post_id=5,
         post_table="posts",
         chunk_ids=["chunk-1", "chunk-2"],
-        chunk_table="chunks_body_bge_base_v1_5",
-        model_name="bge-base-v1.5",
+        chunk_table="chunks_body_baai_bge_base_en_v1_5",
+        model_name="BAAI/bge-base-en-v1.5",
     )
     model = MockEmbeddingModel(dim=768)
 
@@ -177,8 +177,8 @@ async def test_embed_chunks_emits_embedding_completed_event():
         post_id=7,
         post_table="posts",
         chunk_ids=["chunk-1", "chunk-2"],
-        chunk_table="chunks_body_bge_base_v1_5",
-        model_name="bge-base-v1.5",
+        chunk_table="chunks_body_baai_bge_base_en_v1_5",
+        model_name="BAAI/bge-base-en-v1.5",
         trace_id="trace-123",
     )
     model = MockEmbeddingModel(dim=768)
@@ -189,7 +189,7 @@ async def test_embed_chunks_emits_embedding_completed_event():
     assert len(events) == 1
     event = events[0]
     assert event["post_id"] == 7
-    assert event["chunk_table"] == "chunks_body_bge_base_v1_5"
+    assert event["chunk_table"] == "chunks_body_baai_bge_base_en_v1_5"
     assert event["model_name"] == "mock-model"
     assert set(event["chunk_ids"]) == {"chunk-1", "chunk-2"}
 
@@ -211,8 +211,8 @@ async def test_embed_chunks_groups_by_post_id_and_chunk_table():
         post_id=10,
         post_table="posts",
         chunk_ids=["chunk-1"],
-        chunk_table="chunks_body_bge_base_v1_5",
-        model_name="bge-base-v1.5",
+        chunk_table="chunks_body_baai_bge_base_en_v1_5",
+        model_name="BAAI/bge-base-en-v1.5",
     )
     task2 = EmbedTask(
         task_id="task-2",
@@ -220,8 +220,8 @@ async def test_embed_chunks_groups_by_post_id_and_chunk_table():
         post_id=10,
         post_table="posts",
         chunk_ids=["chunk-2"],
-        chunk_table="chunks_body_bge_base_v1_5",
-        model_name="bge-base-v1.5",
+        chunk_table="chunks_body_baai_bge_base_en_v1_5",
+        model_name="BAAI/bge-base-en-v1.5",
     )
     model = MockEmbeddingModel(dim=768)
 
@@ -248,8 +248,8 @@ async def test_embed_chunks_returns_all_tasks_when_no_chunk_ids():
         post_id=1,
         post_table="posts",
         chunk_ids=[],  # Empty
-        chunk_table="chunks_body_bge_base_v1_5",
-        model_name="bge-base-v1.5",
+        chunk_table="chunks_body_baai_bge_base_en_v1_5",
+        model_name="BAAI/bge-base-en-v1.5",
     )
     model = MockEmbeddingModel(dim=768)
 
@@ -273,8 +273,8 @@ async def test_embed_chunks_fails_entire_batch_on_encode_error():
         post_id=1,
         post_table="posts",
         chunk_ids=["chunk-1"],
-        chunk_table="chunks_body_bge_base_v1_5",
-        model_name="bge-base-v1.5",
+        chunk_table="chunks_body_baai_bge_base_en_v1_5",
+        model_name="BAAI/bge-base-en-v1.5",
     )
 
     # Create a broken model that raises
@@ -304,7 +304,7 @@ async def test_embed_query_encodes_and_persists_vector():
         post_table=None,
         chunk_ids=[],
         chunk_table=None,
-        model_name="bge-base-v1.5",
+        model_name="BAAI/bge-base-en-v1.5",
         query="How to learn Python?",
         query_job_id="job-123",
     )
@@ -332,7 +332,7 @@ async def test_embed_query_emits_search_query_embedded_event():
         post_table=None,
         chunk_ids=[],
         chunk_table=None,
-        model_name="bge-base-v1.5",
+        model_name="BAAI/bge-base-en-v1.5",
         query="Search query text",
         query_job_id="job-456",
         trace_id="trace-query",
@@ -365,7 +365,7 @@ async def test_embed_query_skips_when_query_missing():
         post_table=None,
         chunk_ids=[],
         chunk_table=None,
-        model_name="bge-base-v1.5",
+        model_name="BAAI/bge-base-en-v1.5",
         query=None,  # Missing
         query_job_id="job-789",
     )
@@ -389,7 +389,7 @@ async def test_embed_query_skips_when_job_id_missing():
         post_table=None,
         chunk_ids=[],
         chunk_table=None,
-        model_name="bge-base-v1.5",
+        model_name="BAAI/bge-base-en-v1.5",
         query="Search query",
         query_job_id=None,  # Missing
     )
@@ -413,7 +413,7 @@ async def test_embed_query_fails_on_encode_error():
         post_table=None,
         chunk_ids=[],
         chunk_table=None,
-        model_name="bge-base-v1.5",
+        model_name="BAAI/bge-base-en-v1.5",
         query="Query text",
         query_job_id="job-fail",
     )

@@ -1,4 +1,4 @@
-"""Integration tests to verify all dispatchers are wired up and processing events.
+﻿"""Integration tests to verify all dispatchers are wired up and processing events.
 
 This test suite catches issues where dispatchers are missing from the entrypoint,
 ensuring the full pipeline flow works as expected.
@@ -166,15 +166,15 @@ async def test_chunk_dispatcher_consumes_chunks_created(clean_pipeline_tables):
     # Set up RabbitMQ to capture embed tasks
     channel = await rmq_conn.channel()
     exchange = await channel.declare_exchange("embedding", aio_pika.ExchangeType.TOPIC, durable=True)
-    queue = await channel.declare_queue("gpu.embed.bge-base-v1.5", exclusive=True, auto_delete=True)
-    await queue.bind(exchange, routing_key="gpu.embed.bge-base-v1.5")
+    queue = await channel.declare_queue("gpu.embed.bge-base-en-v1.5", exclusive=True, auto_delete=True)
+    await queue.bind(exchange, routing_key="gpu.embed.bge-base-en-v1.5")
 
     # Publish a chunks.created event (schema: task_type, chunk_count, created_at required)
     from datetime import datetime, UTC
     event = ChunksCreatedEvent(
         post_id=1,
         post_table="posts_test",
-        chunk_table="posts_test_chunks_body_bge_base_v1_5",
+        chunk_table="posts_test_chunks_body_baai_bge_base_en_v1_5",
         chunk_ids=["chunk-1", "chunk-2"],
         task_type="body",
         chunk_count=2,
@@ -194,8 +194,8 @@ async def test_chunk_dispatcher_consumes_chunks_created(clean_pipeline_tables):
     task = EmbedTask.model_validate(task_dict)
 
     assert task.task_type == "chunk"
-    assert task.chunk_table == "posts_test_chunks_body_bge_base_v1_5"
-    assert task.model_name == "bge-base-v1.5"
+    assert task.chunk_table == "posts_test_chunks_body_baai_bge_base_en_v1_5"
+    assert task.model_name == "BAAI/bge-base-en-v1.5"
 
     await channel.close()
 
@@ -217,7 +217,7 @@ async def test_search_dispatcher_consumes_search_job_created(clean_pipeline_tabl
     channel = await rmq_conn.channel()
     exchange = await channel.declare_exchange("embedding", aio_pika.ExchangeType.TOPIC, durable=True)
     queue = await channel.declare_queue("gpu.embed.query", exclusive=True, auto_delete=True)
-    await queue.bind(exchange, routing_key="gpu.embed.bge-base-v1.5")
+    await queue.bind(exchange, routing_key="gpu.embed.bge-base-en-v1.5")
 
     # Publish a search_job.created event
     job_id = str(uuid.uuid4())
@@ -268,7 +268,7 @@ async def test_embedding_dispatcher_consumes_search_query_embedded(clean_pipelin
     job_id = str(uuid.uuid4())
     event = SearchQueryEmbeddedEvent(
         query_job_id=job_id,
-        model_name="bge-base-v1.5",
+        model_name="BAAI/bge-base-en-v1.5",
     )
     await bus.publish("search_query.embedded", event.to_dict())
 

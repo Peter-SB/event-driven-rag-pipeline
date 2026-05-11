@@ -152,6 +152,51 @@ def _dlq_messages_total():
     )
 
 
+def _embedding_encode_seconds():
+    return _get_or_create_metric(
+        "rag_embedding_encode_seconds",
+        "histogram",
+        description="Time spent in the model encoder (GPU/CPU compute only, excludes DB I/O)",
+        unit="s",
+    )
+
+
+def _model_load_seconds():
+    return _get_or_create_metric(
+        "rag_model_load_seconds",
+        "histogram",
+        description="Time to load an embedding model into memory (GPU or CPU)",
+        unit="s",
+    )
+
+
+def _model_unload_seconds():
+    return _get_or_create_metric(
+        "rag_model_unload_seconds",
+        "histogram",
+        description="Time to unload an embedding model from memory (garbage collection + cleanup)",
+        unit="s",
+    )
+
+
+def _embedding_batch_size():
+    return _get_or_create_metric(
+        "rag_embedding_batch_size",
+        "histogram",
+        description="Number of texts in each encoder batch (GPU utilisation indicator)",
+        unit="1",
+    )
+
+
+def _embedding_seconds_per_text():
+    return _get_or_create_metric(
+        "rag_embedding_seconds_per_text",
+        "histogram",
+        description="Encode latency per individual text (encode_seconds / batch_size)",
+        unit="s",
+    )
+
+
 def record_posts_processed(count: int, status: str = "success") -> None:
     """Record posts received by the API.
 
@@ -241,3 +286,25 @@ def record_dlq_routed(queue_name: str) -> None:
     queue_name: the RabbitMQ queue the message was originally consumed from.
     """
     _dlq_messages_total().add(1, {"queue": queue_name})
+
+
+def record_encode_latency(latency_seconds: float, model: str, batch_size: int) -> None:
+    """Record GPU/CPU encoder time and derived per-text latency.
+
+    Separates compute time from I/O so slow DB writes don't mask fast GPUs.
+    batch_size is recorded as a separate metric for GPU utilisation analysis.
+    """
+    _embedding_encode_seconds().record(latency_seconds, {"model": model})
+    _embedding_batch_size().record(batch_size, {"model": model})
+    if batch_size > 0:
+        _embedding_seconds_per_text().record(latency_seconds / batch_size, {"model": model})
+
+
+def record_model_load_time(latency_seconds: float, model: str) -> None:
+    """Record time to load an embedding model (includes download + initialization)."""
+    _model_load_seconds().record(latency_seconds, {"model": model})
+
+
+def record_model_unload_time(latency_seconds: float, model: str) -> None:
+    """Record time to unload an embedding model (garbage collection + cleanup)."""
+    _model_unload_seconds().record(latency_seconds, {"model": model})

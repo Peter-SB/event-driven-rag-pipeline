@@ -57,7 +57,12 @@ class TaskRoute:
 
     def resolve_key(self, task: BaseTask) -> str:
         """Substitute task fields into the routing key template."""
-        return self.routing_key.format_map(task.model_dump())
+        data = task.model_dump()
+        # Strip HuggingFace org prefix so "BAAI/bge-base-en-v1.5" routes to
+        # "gpu.embed.bge-base-en-v1.5", not "gpu.embed.BAAI/bge-base-en-v1.5".
+        if "model_name" in data and isinstance(data["model_name"], str):
+            data["model_name"] = data["model_name"].split("/")[-1].lower()
+        return self.routing_key.format_map(data)
 
 
 #: Maps each ``kind`` value to its publish destination.
