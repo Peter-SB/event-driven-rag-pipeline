@@ -30,12 +30,10 @@ datasources:
         datasourceUid: loki
         spanStartTimeShift: "-1m"
         spanEndTimeShift: "1m"
-        tags:
-          - key: service.name
-            value: service
         filterByTraceID: true
         filterBySpanID: false
-        customQuery: false
+        customQuery: true
+        query: '{} | trace_id="${__trace.traceId}"'
       tracesToMetrics:
         datasourceUid: prometheus
         tags:
@@ -61,8 +59,7 @@ datasources:
     jsonData:
       derivedFields:
         - name: trace_id
-          matcherType: label
+          matcherType: structuredMetadata
           matcherExpression: trace_id
-          url: "${__value.raw}"
           datasourceUid: tempo
           urlDisplayLabel: "View Trace"

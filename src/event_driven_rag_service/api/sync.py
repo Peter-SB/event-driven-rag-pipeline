@@ -140,6 +140,7 @@ async def sync_posts(req: SyncRequest, request: Request) -> SyncResponse:
                         parent_span_id=parent_span_id,
                     )
                     await event_bus.publish("post.synced", event.to_dict())
+                    logger.info("post.synced post_id=%d table=%s", post.post_id, post_table)
 
                 results.append(
                     PostSyncResult(post_id=post.post_id, status=sync_status, success=True)
@@ -163,10 +164,13 @@ async def sync_posts(req: SyncRequest, request: Request) -> SyncResponse:
         updated_count = sum(1 for r in results if r.status == "updated")
         skipped_count = sum(1 for r in results if r.status == "skipped")
 
-        if error_count == 0:
-            record_posts_processed(len(req.posts), "success")
-        else:
-            record_posts_processed(len(req.posts) - error_count, "success")
+        if inserted_count > 0:
+            record_posts_processed(inserted_count, "inserted")
+        if updated_count > 0:
+            record_posts_processed(updated_count, "updated")
+        if skipped_count > 0:
+            record_posts_processed(skipped_count, "skipped")
+        if error_count > 0:
             record_posts_processed(error_count, "error")
 
         latency_seconds = time.time() - start_time

@@ -282,7 +282,7 @@ class EmbedHandler:
             )
             await self._event_log.publish(event.event_type, event.to_dict())
             logger.info(
-                "EmbedHandler: %d chunks embedded and persisted (model=%s post=%s table=%s)",
+                "embedding.completed chunks=%d model=%s post_id=%s table=%s",
                 len(chunk_ids),
                 model_name,
                 key[0],

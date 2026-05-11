@@ -24,6 +24,15 @@ discovery.relabel "containers" {
     source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
     target_label  = "service"
   }
+
+  // Derive service_name from container name so it matches the OTEL service.name
+  // (rag-api, rag-gpu-worker, …) without application code needing to know about it.
+  // This is the correct layer for infrastructure-level label enrichment.
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "service_name"
+  }
 }
 
 // ── Step 3: Tail container log files ─────────────────────────────────────────

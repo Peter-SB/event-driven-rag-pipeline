@@ -53,6 +53,11 @@ class Settings:
     otel_exporter_otlp_endpoint: str = field(
         default_factory=lambda: os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317")
     )
+    # Span processor: "simple" for fast debugging (exports immediately),
+    # or "batch" for production (buffers spans for efficiency).
+    otel_span_processor: str = field(
+        default_factory=lambda: os.getenv("OTEL_SPAN_PROCESSOR", "simple")
+    )
 
 
 settings = Settings()

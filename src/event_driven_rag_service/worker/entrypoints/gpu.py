@@ -55,7 +55,7 @@ def _load_model(model_name: str) -> Any:
         load_start = time.time()
         st_model = SentenceTransformer(model_name, trust_remote_code=True)
         load_time = time.time() - load_start
-        dim = st_model.get_sentence_embedding_dimension()
+        dim = st_model.get_embedding_dimension()
         record_model_load_time(load_time, model_name)
         logger.info(
             "Model loaded: %s (dim=%d load_time=%.2fs)",

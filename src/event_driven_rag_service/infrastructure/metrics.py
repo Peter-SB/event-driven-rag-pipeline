@@ -197,10 +197,10 @@ def _embedding_seconds_per_text():
     )
 
 
-def record_posts_processed(count: int, status: str = "success") -> None:
+def record_posts_processed(count: int, status: str = "inserted") -> None:
     """Record posts received by the API.
 
-    Status: 'success' | 'error' (validation/db failures before processing)
+    Status: 'inserted' | 'updated' | 'skipped' | 'error'
     """
     _posts_processed_total().add(count, {"status": status})
 

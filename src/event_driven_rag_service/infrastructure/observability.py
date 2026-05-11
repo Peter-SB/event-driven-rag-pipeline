@@ -105,7 +105,7 @@ def setup_observability(service_name: str | None = None) -> None:
     from event_driven_rag_service.config.settings import settings
 
     name = service_name or settings.otel_service_name
-    _configure_logging(otel_enabled=settings.otel_enabled, service_name=name)
+    _configure_logging(otel_enabled=settings.otel_enabled)
 
     if settings.otel_enabled:
         _configure_otel(
@@ -149,7 +149,7 @@ def _inject_otel_context(
 # Internal: structlog + stdlib logging configuration
 # ---------------------------------------------------------------------------
 
-def _configure_logging(otel_enabled: bool, service_name: str) -> None:
+def _configure_logging(otel_enabled: bool) -> None:
     """Set up structlog and route stdlib logging through it.
 
     LEARNING NOTE — two processor chains:
@@ -276,8 +276,10 @@ def _configure_otel(service_name: str, otlp_endpoint: str) -> None:
     from opentelemetry import trace
     from opentelemetry.sdk.resources import Resource, SERVICE_NAME
     from opentelemetry.sdk.trace import TracerProvider
-    from opentelemetry.sdk.trace.export import BatchSpanProcessor
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor, SimpleSpanProcessor
     from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+
+    from event_driven_rag_service.config.settings import settings
 
     resource = Resource.create({SERVICE_NAME: service_name})
 
@@ -287,7 +289,15 @@ def _configure_otel(service_name: str, otlp_endpoint: str) -> None:
     # If the collector is unreachable on startup, the exporter logs a warning and retries
     # in the background — it does NOT crash the service.
     exporter = OTLPSpanExporter(endpoint=otlp_endpoint, insecure=True)
-    provider.add_span_processor(BatchSpanProcessor(exporter))
+    
+    # Select span processor based on OTEL_SPAN_PROCESSOR env var:
+    # - "simple": exports spans immediately (low latency, good for debugging)
+    # - "batch": buffers spans before export (higher throughput for production)
+    if settings.otel_span_processor.lower() == "batch":
+        processor = BatchSpanProcessor(exporter)
+    else:
+        processor = SimpleSpanProcessor(exporter)
+    provider.add_span_processor(processor)
     trace.set_tracer_provider(provider)
 
     # ── Metrics ─────────────────────────────────────────────────────────────

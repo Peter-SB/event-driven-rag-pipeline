@@ -306,7 +306,7 @@ class ChunkPostHandler:
             record_chunking_latency(latency_seconds, task.task_type)
 
             logger.info(
-                "ChunkPostHandler: post %d (%s) → %d new chunks (skipped %d unchanged)",
+                "chunks.created post_id=%d task_type=%s count=%d skipped=%d",
                 task.post_id,
                 task.task_type,
                 len(new_chunks),
