@@ -32,6 +32,7 @@ from event_driven_rag_service.infrastructure.task_queue import setup_topology
 from event_driven_rag_service.repository.post_repository import PostRepository
 from event_driven_rag_service.repository.search_job_repository import SearchJobRepository
 from event_driven_rag_service.api.sync import router as sync_router
+from event_driven_rag_service.api.sync_legacy import router as sync_legacy_router
 from event_driven_rag_service.api.search import router as search_router
 
 logger = logging.getLogger(__name__)
@@ -89,6 +90,7 @@ app = FastAPI(
 )
 
 app.include_router(sync_router)
+app.include_router(sync_legacy_router)
 app.include_router(search_router)
 
 
