@@ -1,0 +1,1036 @@
+{
+    "id": null,
+    "uid": "embeddings-overview",
+    "title": "Embeddings — Overview",
+    "description": "Pipeline progress: post counts, chunks created, and embeddings stored per library. Per-type panels query specific tables directly and show 'No data' until that chunk type has been processed.",
+    "tags": [
+        "rag",
+        "embeddings",
+        "chunks",
+        "postgres"
+    ],
+    "timezone": "browser",
+    "editable": true,
+    "schemaVersion": 38,
+    "version": 1,
+    "refresh": "30s",
+    "time": {
+        "from": "now-1y",
+        "to": "now"
+    },
+    "timepicker": {},
+    "templating": {
+        "list": [
+            {
+                "current": {
+                    "selected": true,
+                    "text": "main_test",
+                    "value": "main_test"
+                },
+                "datasource": {
+                    "type": "postgres",
+                    "uid": "postgres-ds"
+                },
+                "definition": "SELECT regexp_replace(table_name, '^posts_', '') FROM information_schema.tables WHERE table_schema = 'public' AND table_name LIKE 'posts_%' AND table_name NOT LIKE '%_chunks_%' ORDER BY 1",
+                "hide": 0,
+                "includeAll": false,
+                "allowCustomValue": true,
+                "label": "Library",
+                "multi": false,
+                "name": "library_id",
+                "options": [],
+                "query": "SELECT regexp_replace(table_name, '^posts_', '') FROM information_schema.tables WHERE table_schema = 'public' AND table_name LIKE 'posts_%' AND table_name NOT LIKE '%_chunks_%' ORDER BY 1",
+                "refresh": 2,
+                "regex": "",
+                "sort": 1,
+                "type": "query"
+            }
+        ]
+    },
+    "panels": [
+        {
+            "id": 1,
+            "type": "row",
+            "title": "Posts",
+            "collapsed": false,
+            "gridPos": {
+                "h": 1,
+                "w": 24,
+                "x": 0,
+                "y": 0
+            }
+        },
+        {
+            "id": 2,
+            "title": "Total Posts",
+            "description": "All posts in the library (including deleted and archived)",
+            "type": "stat",
+            "datasource": {
+                "type": "postgres",
+                "uid": "postgres-ds"
+            },
+            "gridPos": {
+                "h": 5,
+                "w": 12,
+                "x": 0,
+                "y": 1
+            },
+            "targets": [
+                {
+                    "datasource": {
+                        "type": "postgres",
+                        "uid": "postgres-ds"
+                    },
+                    "rawQuery": true,
+                    "rawSql": "SELECT COUNT(*) AS \"Total Posts\" FROM posts_${library_id}",
+                    "format": "table",
+                    "refId": "A"
+                }
+            ],
+            "options": {
+                "reduceOptions": {
+                    "values": false,
+                    "calcs": [
+                        "lastNotNull"
+                    ],
+                    "fields": ""
+                },
+                "orientation": "auto",
+                "textMode": "auto",
+                "colorMode": "background",
+                "graphMode": "none",
+                "justifyMode": "center",
+                "wideLayout": true,
+                "showPercentChange": false
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "color": {
+                        "fixedColor": "blue",
+                        "mode": "fixed"
+                    },
+                    "unit": "short",
+                    "mappings": [],
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {
+                                "color": "blue",
+                                "value": null
+                            }
+                        ]
+                    }
+                },
+                "overrides": []
+            }
+        },
+        {
+            "id": 3,
+            "title": "Total Posts with Summary",
+            "description": "Active posts where a summary field has been populated",
+            "type": "stat",
+            "datasource": {
+                "type": "postgres",
+                "uid": "postgres-ds"
+            },
+            "gridPos": {
+                "h": 5,
+                "w": 12,
+                "x": 12,
+                "y": 1
+            },
+            "targets": [
+                {
+                    "datasource": {
+                        "type": "postgres",
+                        "uid": "postgres-ds"
+                    },
+                    "rawQuery": true,
+                    "rawSql": "SELECT COUNT(*) AS \"With Summary\" FROM posts_${library_id} WHERE summary IS NOT NULL",
+                    "format": "table",
+                    "refId": "A"
+                }
+            ],
+            "options": {
+                "reduceOptions": {
+                    "values": false,
+                    "calcs": [
+                        "lastNotNull"
+                    ],
+                    "fields": ""
+                },
+                "orientation": "auto",
+                "textMode": "auto",
+                "colorMode": "background",
+                "graphMode": "none",
+                "justifyMode": "center",
+                "wideLayout": true,
+                "showPercentChange": false
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "color": {
+                        "fixedColor": "purple",
+                        "mode": "fixed"
+                    },
+                    "unit": "short",
+                    "mappings": [],
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {
+                                "color": "purple",
+                                "value": null
+                            }
+                        ]
+                    }
+                },
+                "overrides": []
+            }
+        },
+        {
+            "id": 4,
+            "type": "row",
+            "title": "Chunks",
+            "collapsed": false,
+            "gridPos": {
+                "h": 1,
+                "w": 24,
+                "x": 0,
+                "y": 6
+            }
+        },
+        {
+            "id": 5,
+            "title": "Total Chunks",
+            "description": "All chunks across body, title, and summary tables. Based on table statistics (n_live_tup) — accurate after ANALYZE or autovacuum.",
+            "type": "stat",
+            "datasource": {
+                "type": "postgres",
+                "uid": "postgres-ds"
+            },
+            "gridPos": {
+                "h": 5,
+                "w": 6,
+                "x": 0,
+                "y": 7
+            },
+            "targets": [
+                {
+                    "datasource": {
+                        "type": "postgres",
+                        "uid": "postgres-ds"
+                    },
+                    "rawQuery": true,
+                    "rawSql": "SELECT COALESCE(SUM(n_live_tup), 0) AS \"Total Chunks\"\nFROM pg_stat_user_tables\nWHERE schemaname = 'public'\n  AND relname LIKE 'posts_${library_id}_chunks_%'\n  AND relname NOT LIKE '%_search_jobs_%'",
+                    "format": "table",
+                    "refId": "A"
+                }
+            ],
+            "options": {
+                "reduceOptions": {
+                    "values": false,
+                    "calcs": [
+                        "lastNotNull"
+                    ],
+                    "fields": ""
+                },
+                "orientation": "auto",
+                "textMode": "auto",
+                "colorMode": "background",
+                "graphMode": "none",
+                "justifyMode": "center",
+                "wideLayout": true,
+                "showPercentChange": false
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "color": {
+                        "fixedColor": "teal",
+                        "mode": "fixed"
+                    },
+                    "unit": "short",
+                    "mappings": [],
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {
+                                "color": "teal",
+                                "value": null
+                            }
+                        ]
+                    }
+                },
+                "overrides": []
+            }
+        },
+        {
+            "id": 6,
+            "title": "Summary Chunks",
+            "description": "Chunks from the summary_title pipeline (model: Qwen/Qwen3-0.6B). Shows 'No data' until the first summary chunk is processed.",
+            "type": "stat",
+            "datasource": {
+                "type": "postgres",
+                "uid": "postgres-ds"
+            },
+            "gridPos": {
+                "h": 5,
+                "w": 6,
+                "x": 6,
+                "y": 7
+            },
+            "targets": [
+                {
+                    "datasource": {
+                        "type": "postgres",
+                        "uid": "postgres-ds"
+                    },
+                    "rawQuery": true,
+                    "rawSql": "SELECT COUNT(*) AS \"Summary Chunks\" FROM posts_${library_id}_chunks_summary_title_qwen_qwen3_0_6b",
+                    "format": "table",
+                    "refId": "A"
+                }
+            ],
+            "options": {
+                "reduceOptions": {
+                    "values": false,
+                    "calcs": [
+                        "lastNotNull"
+                    ],
+                    "fields": ""
+                },
+                "orientation": "auto",
+                "textMode": "auto",
+                "colorMode": "background",
+                "graphMode": "none",
+                "justifyMode": "center",
+                "wideLayout": true,
+                "showPercentChange": false
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "color": {
+                        "fixedColor": "purple",
+                        "mode": "fixed"
+                    },
+                    "unit": "short",
+                    "mappings": [],
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {
+                                "color": "purple",
+                                "value": null
+                            }
+                        ]
+                    }
+                },
+                "overrides": []
+            }
+        },
+        {
+            "id": 7,
+            "title": "Body Chunks",
+            "description": "Chunks from the body pipeline (model: BAAI/bge-base-en-v1.5). Shows 'No data' until the first body chunk is processed.",
+            "type": "stat",
+            "datasource": {
+                "type": "postgres",
+                "uid": "postgres-ds"
+            },
+            "gridPos": {
+                "h": 5,
+                "w": 6,
+                "x": 12,
+                "y": 7
+            },
+            "targets": [
+                {
+                    "datasource": {
+                        "type": "postgres",
+                        "uid": "postgres-ds"
+                    },
+                    "rawQuery": true,
+                    "rawSql": "SELECT COUNT(*) AS \"Body Chunks\" FROM posts_${library_id}_chunks_body_baai_bge_base_en_v1_5",
+                    "format": "table",
+                    "refId": "A"
+                }
+            ],
+            "options": {
+                "reduceOptions": {
+                    "values": false,
+                    "calcs": [
+                        "lastNotNull"
+                    ],
+                    "fields": ""
+                },
+                "orientation": "auto",
+                "textMode": "auto",
+                "colorMode": "background",
+                "graphMode": "none",
+                "justifyMode": "center",
+                "wideLayout": true,
+                "showPercentChange": false
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "color": {
+                        "fixedColor": "green",
+                        "mode": "fixed"
+                    },
+                    "unit": "short",
+                    "mappings": [],
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {
+                                "color": "green",
+                                "value": null
+                            }
+                        ]
+                    }
+                },
+                "overrides": []
+            }
+        },
+        {
+            "id": 8,
+            "title": "Title Chunks",
+            "description": "Chunks from the title pipeline (model: BAAI/bge-small-en-v1.5). Shows 'No data' until the first title chunk is processed.",
+            "type": "stat",
+            "datasource": {
+                "type": "postgres",
+                "uid": "postgres-ds"
+            },
+            "gridPos": {
+                "h": 5,
+                "w": 6,
+                "x": 18,
+                "y": 7
+            },
+            "targets": [
+                {
+                    "datasource": {
+                        "type": "postgres",
+                        "uid": "postgres-ds"
+                    },
+                    "rawQuery": true,
+                    "rawSql": "SELECT COUNT(*) AS \"Title Chunks\" FROM posts_${library_id}_chunks_title_baai_bge_small_en_v1_5",
+                    "format": "table",
+                    "refId": "A"
+                }
+            ],
+            "options": {
+                "reduceOptions": {
+                    "values": false,
+                    "calcs": [
+                        "lastNotNull"
+                    ],
+                    "fields": ""
+                },
+                "orientation": "auto",
+                "textMode": "auto",
+                "colorMode": "background",
+                "graphMode": "none",
+                "justifyMode": "center",
+                "wideLayout": true,
+                "showPercentChange": false
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "color": {
+                        "fixedColor": "orange",
+                        "mode": "fixed"
+                    },
+                    "unit": "short",
+                    "mappings": [],
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {
+                                "color": "orange",
+                                "value": null
+                            }
+                        ]
+                    }
+                },
+                "overrides": []
+            }
+        },
+        {
+            "id": 9,
+            "type": "row",
+            "title": "Embeddings",
+            "collapsed": false,
+            "gridPos": {
+                "h": 1,
+                "w": 24,
+                "x": 0,
+                "y": 12
+            }
+        },
+        {
+            "id": 10,
+            "title": "Total Embeddings",
+            "description": "All stored embedding vectors across body, title, and summary tables. Based on table statistics — accurate after ANALYZE or autovacuum.",
+            "type": "stat",
+            "datasource": {
+                "type": "postgres",
+                "uid": "postgres-ds"
+            },
+            "gridPos": {
+                "h": 5,
+                "w": 6,
+                "x": 0,
+                "y": 13
+            },
+            "targets": [
+                {
+                    "datasource": {
+                        "type": "postgres",
+                        "uid": "postgres-ds"
+                    },
+                    "rawQuery": true,
+                    "rawSql": "SELECT COALESCE(SUM(n_live_tup), 0) AS \"Total Embeddings\"\nFROM pg_stat_user_tables\nWHERE schemaname = 'public'\n  AND relname LIKE 'posts_${library_id}_chunks_%'\n  AND relname NOT LIKE '%_search_jobs_%'",
+                    "format": "table",
+                    "refId": "A"
+                }
+            ],
+            "options": {
+                "reduceOptions": {
+                    "values": false,
+                    "calcs": [
+                        "lastNotNull"
+                    ],
+                    "fields": ""
+                },
+                "orientation": "auto",
+                "textMode": "auto",
+                "colorMode": "background",
+                "graphMode": "none",
+                "justifyMode": "center",
+                "wideLayout": true,
+                "showPercentChange": false
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "color": {
+                        "fixedColor": "dark-blue",
+                        "mode": "fixed"
+                    },
+                    "unit": "short",
+                    "mappings": [],
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {
+                                "color": "dark-blue",
+                                "value": null
+                            }
+                        ]
+                    }
+                },
+                "overrides": []
+            }
+        },
+        {
+            "id": 11,
+            "title": "Summaries Embedded",
+            "description": "Summary chunks with a computed embedding vector (embedding IS NOT NULL). Shows 'No data' until the table exists.",
+            "type": "stat",
+            "datasource": {
+                "type": "postgres",
+                "uid": "postgres-ds"
+            },
+            "gridPos": {
+                "h": 5,
+                "w": 6,
+                "x": 6,
+                "y": 13
+            },
+            "targets": [
+                {
+                    "datasource": {
+                        "type": "postgres",
+                        "uid": "postgres-ds"
+                    },
+                    "rawQuery": true,
+                    "rawSql": "SELECT COUNT(*) AS \"Summaries Embedded\" FROM posts_${library_id}_chunks_summary_title_qwen_qwen3_0_6b WHERE embedding IS NOT NULL",
+                    "format": "table",
+                    "refId": "A"
+                }
+            ],
+            "options": {
+                "reduceOptions": {
+                    "values": false,
+                    "calcs": [
+                        "lastNotNull"
+                    ],
+                    "fields": ""
+                },
+                "orientation": "auto",
+                "textMode": "auto",
+                "colorMode": "background",
+                "graphMode": "none",
+                "justifyMode": "center",
+                "wideLayout": true,
+                "showPercentChange": false
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "color": {
+                        "fixedColor": "dark-purple",
+                        "mode": "fixed"
+                    },
+                    "unit": "short",
+                    "mappings": [],
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {
+                                "color": "dark-purple",
+                                "value": null
+                            }
+                        ]
+                    }
+                },
+                "overrides": []
+            }
+        },
+        {
+            "id": 12,
+            "title": "Bodies Embedded",
+            "description": "Body chunks with a computed embedding vector (embedding IS NOT NULL). Shows 'No data' until the table exists.",
+            "type": "stat",
+            "datasource": {
+                "type": "postgres",
+                "uid": "postgres-ds"
+            },
+            "gridPos": {
+                "h": 5,
+                "w": 6,
+                "x": 12,
+                "y": 13
+            },
+            "targets": [
+                {
+                    "datasource": {
+                        "type": "postgres",
+                        "uid": "postgres-ds"
+                    },
+                    "rawQuery": true,
+                    "rawSql": "SELECT COUNT(*) AS \"Bodies Embedded\" FROM posts_${library_id}_chunks_body_baai_bge_base_en_v1_5 WHERE embedding IS NOT NULL",
+                    "format": "table",
+                    "refId": "A"
+                }
+            ],
+            "options": {
+                "reduceOptions": {
+                    "values": false,
+                    "calcs": [
+                        "lastNotNull"
+                    ],
+                    "fields": ""
+                },
+                "orientation": "auto",
+                "textMode": "auto",
+                "colorMode": "background",
+                "graphMode": "none",
+                "justifyMode": "center",
+                "wideLayout": true,
+                "showPercentChange": false
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "color": {
+                        "fixedColor": "dark-green",
+                        "mode": "fixed"
+                    },
+                    "unit": "short",
+                    "mappings": [],
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {
+                                "color": "dark-green",
+                                "value": null
+                            }
+                        ]
+                    }
+                },
+                "overrides": []
+            }
+        },
+        {
+            "id": 13,
+            "title": "Titles Embedded",
+            "description": "Title chunks with a computed embedding vector (embedding IS NOT NULL). Shows 'No data' until the table exists.",
+            "type": "stat",
+            "datasource": {
+                "type": "postgres",
+                "uid": "postgres-ds"
+            },
+            "gridPos": {
+                "h": 5,
+                "w": 6,
+                "x": 18,
+                "y": 13
+            },
+            "targets": [
+                {
+                    "datasource": {
+                        "type": "postgres",
+                        "uid": "postgres-ds"
+                    },
+                    "rawQuery": true,
+                    "rawSql": "SELECT COUNT(*) AS \"Titles Embedded\" FROM posts_${library_id}_chunks_title_baai_bge_small_en_v1_5 WHERE embedding IS NOT NULL",
+                    "format": "table",
+                    "refId": "A"
+                }
+            ],
+            "options": {
+                "reduceOptions": {
+                    "values": false,
+                    "calcs": [
+                        "lastNotNull"
+                    ],
+                    "fields": ""
+                },
+                "orientation": "auto",
+                "textMode": "auto",
+                "colorMode": "background",
+                "graphMode": "none",
+                "justifyMode": "center",
+                "wideLayout": true,
+                "showPercentChange": false
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "color": {
+                        "fixedColor": "dark-orange",
+                        "mode": "fixed"
+                    },
+                    "unit": "short",
+                    "mappings": [],
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {
+                                "color": "dark-orange",
+                                "value": null
+                            }
+                        ]
+                    }
+                },
+                "overrides": []
+            }
+        },
+        {
+            "id": 14,
+            "type": "row",
+            "title": "Embedding Progress",
+            "collapsed": false,
+            "gridPos": {
+                "h": 1,
+                "w": 24,
+                "x": 0,
+                "y": 18
+            }
+        },
+        {
+            "id": 15,
+            "title": "Total % Embedded",
+            "description": "Percentage of all chunks (body + title + summary) that have a stored embedding. Shows 'No data' if any chunk table does not yet exist.",
+            "type": "stat",
+            "datasource": {
+                "type": "postgres",
+                "uid": "postgres-ds"
+            },
+            "gridPos": {
+                "h": 5,
+                "w": 6,
+                "x": 0,
+                "y": 19
+            },
+            "targets": [
+                {
+                    "datasource": {
+                        "type": "postgres",
+                        "uid": "postgres-ds"
+                    },
+                    "rawQuery": true,
+                    "rawSql": "SELECT CASE WHEN SUM(total) = 0 THEN 0 ELSE ROUND(SUM(embedded) * 100.0 / SUM(total), 1) END AS \"Total % Embedded\"\nFROM (\n  SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE embedding IS NOT NULL) AS embedded\n    FROM posts_${library_id}_chunks_body_baai_bge_base_en_v1_5\n  UNION ALL\n  SELECT COUNT(*), COUNT(*) FILTER (WHERE embedding IS NOT NULL)\n    FROM posts_${library_id}_chunks_title_baai_bge_small_en_v1_5\n  UNION ALL\n  SELECT COUNT(*), COUNT(*) FILTER (WHERE embedding IS NOT NULL)\n    FROM posts_${library_id}_chunks_summary_title_qwen_qwen3_0_6b\n) sub",
+                    "format": "table",
+                    "refId": "A"
+                }
+            ],
+            "options": {
+                "reduceOptions": {
+                    "values": false,
+                    "calcs": [
+                        "lastNotNull"
+                    ],
+                    "fields": ""
+                },
+                "orientation": "auto",
+                "textMode": "auto",
+                "colorMode": "background",
+                "graphMode": "none",
+                "justifyMode": "center",
+                "wideLayout": true,
+                "showPercentChange": false
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "color": {
+                        "mode": "thresholds"
+                    },
+                    "unit": "percent",
+                    "decimals": 1,
+                    "min": 0,
+                    "max": 100,
+                    "mappings": [],
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {
+                                "color": "red",
+                                "value": null
+                            },
+                            {
+                                "color": "yellow",
+                                "value": 50
+                            },
+                            {
+                                "color": "green",
+                                "value": 95
+                            }
+                        ]
+                    }
+                },
+                "overrides": []
+            }
+        },
+        {
+            "id": 16,
+            "title": "Summaries % Embedded",
+            "description": "Percentage of summary chunks that have a stored embedding. Shows 'No data' until the table exists.",
+            "type": "stat",
+            "datasource": {
+                "type": "postgres",
+                "uid": "postgres-ds"
+            },
+            "gridPos": {
+                "h": 5,
+                "w": 6,
+                "x": 6,
+                "y": 19
+            },
+            "targets": [
+                {
+                    "datasource": {
+                        "type": "postgres",
+                        "uid": "postgres-ds"
+                    },
+                    "rawQuery": true,
+                    "rawSql": "SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE ROUND(COUNT(*) FILTER (WHERE embedding IS NOT NULL) * 100.0 / COUNT(*), 1) END AS \"Summaries % Embedded\"\nFROM posts_${library_id}_chunks_summary_title_qwen_qwen3_0_6b",
+                    "format": "table",
+                    "refId": "A"
+                }
+            ],
+            "options": {
+                "reduceOptions": {
+                    "values": false,
+                    "calcs": [
+                        "lastNotNull"
+                    ],
+                    "fields": ""
+                },
+                "orientation": "auto",
+                "textMode": "auto",
+                "colorMode": "background",
+                "graphMode": "none",
+                "justifyMode": "center",
+                "wideLayout": true,
+                "showPercentChange": false
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "color": {
+                        "mode": "thresholds"
+                    },
+                    "unit": "percent",
+                    "decimals": 1,
+                    "min": 0,
+                    "max": 100,
+                    "mappings": [],
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {
+                                "color": "red",
+                                "value": null
+                            },
+                            {
+                                "color": "yellow",
+                                "value": 50
+                            },
+                            {
+                                "color": "green",
+                                "value": 95
+                            }
+                        ]
+                    }
+                },
+                "overrides": []
+            }
+        },
+        {
+            "id": 17,
+            "title": "Bodies % Embedded",
+            "description": "Percentage of body chunks that have a stored embedding. Shows 'No data' until the table exists.",
+            "type": "stat",
+            "datasource": {
+                "type": "postgres",
+                "uid": "postgres-ds"
+            },
+            "gridPos": {
+                "h": 5,
+                "w": 6,
+                "x": 12,
+                "y": 19
+            },
+            "targets": [
+                {
+                    "datasource": {
+                        "type": "postgres",
+                        "uid": "postgres-ds"
+                    },
+                    "rawQuery": true,
+                    "rawSql": "SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE ROUND(COUNT(*) FILTER (WHERE embedding IS NOT NULL) * 100.0 / COUNT(*), 1) END AS \"Bodies % Embedded\"\nFROM posts_${library_id}_chunks_body_baai_bge_base_en_v1_5",
+                    "format": "table",
+                    "refId": "A"
+                }
+            ],
+            "options": {
+                "reduceOptions": {
+                    "values": false,
+                    "calcs": [
+                        "lastNotNull"
+                    ],
+                    "fields": ""
+                },
+                "orientation": "auto",
+                "textMode": "auto",
+                "colorMode": "background",
+                "graphMode": "none",
+                "justifyMode": "center",
+                "wideLayout": true,
+                "showPercentChange": false
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "color": {
+                        "mode": "thresholds"
+                    },
+                    "unit": "percent",
+                    "decimals": 1,
+                    "min": 0,
+                    "max": 100,
+                    "mappings": [],
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {
+                                "color": "red",
+                                "value": null
+                            },
+                            {
+                                "color": "yellow",
+                                "value": 50
+                            },
+                            {
+                                "color": "green",
+                                "value": 95
+                            }
+                        ]
+                    }
+                },
+                "overrides": []
+            }
+        },
+        {
+            "id": 18,
+            "title": "Titles % Embedded",
+            "description": "Percentage of title chunks that have a stored embedding. Shows 'No data' until the table exists.",
+            "type": "stat",
+            "datasource": {
+                "type": "postgres",
+                "uid": "postgres-ds"
+            },
+            "gridPos": {
+                "h": 5,
+                "w": 6,
+                "x": 18,
+                "y": 19
+            },
+            "targets": [
+                {
+                    "datasource": {
+                        "type": "postgres",
+                        "uid": "postgres-ds"
+                    },
+                    "rawQuery": true,
+                    "rawSql": "SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE ROUND(COUNT(*) FILTER (WHERE embedding IS NOT NULL) * 100.0 / COUNT(*), 1) END AS \"Titles % Embedded\"\nFROM posts_${library_id}_chunks_title_baai_bge_small_en_v1_5",
+                    "format": "table",
+                    "refId": "A"
+                }
+            ],
+            "options": {
+                "reduceOptions": {
+                    "values": false,
+                    "calcs": [
+                        "lastNotNull"
+                    ],
+                    "fields": ""
+                },
+                "orientation": "auto",
+                "textMode": "auto",
+                "colorMode": "background",
+                "graphMode": "none",
+                "justifyMode": "center",
+                "wideLayout": true,
+                "showPercentChange": false
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "color": {
+                        "mode": "thresholds"
+                    },
+                    "unit": "percent",
+                    "decimals": 1,
+                    "min": 0,
+                    "max": 100,
+                    "mappings": [],
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {
+                                "color": "red",
+                                "value": null
+                            },
+                            {
+                                "color": "yellow",
+                                "value": 50
+                            },
+                            {
+                                "color": "green",
+                                "value": 95
+                            }
+                        ]
+                    }
+                },
+                "overrides": []
+            }
+        }
+    ]
+}

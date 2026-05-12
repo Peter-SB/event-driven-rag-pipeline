@@ -63,3 +63,19 @@ datasources:
           matcherExpression: trace_id
           datasourceUid: tempo
           urlDisplayLabel: "View Trace"
+
+  - name: PostgreSQL
+    uid: postgres-ds
+    type: postgres
+    access: proxy
+    url: postgres:5432
+    user: rag
+    secureJsonData:
+      password: rag
+    isDefault: false
+    editable: true
+    jsonData:
+      database: rag
+      sslmode: disable
+      postgresVersion: 1400
+      timescaledb: false

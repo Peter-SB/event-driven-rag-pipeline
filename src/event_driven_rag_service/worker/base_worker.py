@@ -53,10 +53,12 @@ class BaseWorker:
         rabbitmq_url: str,
         queue_name: str = "",
         prefetch: int = 1,
+        heartbeat: int | None = None,
     ) -> None:
         self._rabbitmq_url = rabbitmq_url
         self._queue_name = queue_name
         self._prefetch = prefetch
+        self._heartbeat = heartbeat
         self._running = True
 
     # ------------------------------------------------------------------
@@ -66,6 +68,8 @@ class BaseWorker:
     def _open_channel(self) -> BlockingChannel:
         """Open a fresh pika connection and return a channel with QoS applied."""
         params = pika.URLParameters(self._rabbitmq_url)
+        if self._heartbeat is not None:
+            params.heartbeat = self._heartbeat
         connection = pika.BlockingConnection(params)
         channel = connection.channel()
         if self._prefetch:

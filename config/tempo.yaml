@@ -22,15 +22,10 @@ metrics_generator:
     remote_write:
       - url: http://prometheus:9090/api/v1/write
         send_exemplars: true
-  processor:
-    local_blocks:
-      filter_server_spans: false
-      flush_to_storage: true
-
 overrides:
   defaults:
     metrics_generator:
-      processors: [service-graphs, span-metrics, local-blocks]
+      processors: [service-graphs, span-metrics]
 
 storage:
   trace:

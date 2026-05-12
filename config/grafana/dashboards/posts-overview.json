@@ -1,0 +1,619 @@
+{
+    "id": null,
+    "uid": "posts-overview",
+    "title": "Posts — Overview",
+    "description": "Post counts by status: total, active, read/unread, and favourited with cumulative historical trends",
+    "tags": [
+        "rag",
+        "posts",
+        "postgres"
+    ],
+    "timezone": "browser",
+    "editable": true,
+    "schemaVersion": 38,
+    "version": 1,
+    "refresh": "30s",
+    "time": {
+        "from": "now-1y",
+        "to": "now"
+    },
+    "timepicker": {},
+    "templating": {
+        "list": [
+            {
+                "current": {
+                    "selected": true,
+                    "text": "main_test",
+                    "value": "main_test"
+                },
+                "datasource": {
+                    "type": "postgres",
+                    "uid": "postgres-ds"
+                },
+                "definition": "SELECT regexp_replace(table_name, '^posts_', '') FROM information_schema.tables WHERE table_schema = 'public' AND table_name LIKE 'posts_%' AND table_name NOT LIKE '%_chunks_%' ORDER BY 1",
+                "hide": 0,
+                "includeAll": false,
+                "allowCustomValue": true,
+                "label": "Library",
+                "multi": false,
+                "name": "library_id",
+                "options": [],
+                "query": "SELECT regexp_replace(table_name, '^posts_', '') FROM information_schema.tables WHERE table_schema = 'public' AND table_name LIKE 'posts_%' AND table_name NOT LIKE '%_chunks_%' ORDER BY 1",
+                "refresh": 2,
+                "regex": "",
+                "sort": 1,
+                "type": "query"
+            }
+        ]
+    },
+    "panels": [
+        {
+            "id": 1,
+            "title": "Total Posts",
+            "description": "All posts including deleted and archived",
+            "type": "stat",
+            "datasource": { "type": "postgres", "uid": "postgres-ds" },
+            "gridPos": { "h": 5, "w": 4, "x": 0, "y": 0 },
+            "targets": [
+                {
+                    "datasource": { "type": "postgres", "uid": "postgres-ds" },
+                    "rawQuery": true,
+                    "rawSql": "SELECT COUNT(*) AS \"Total\" FROM posts_${library_id}",
+                    "format": "table",
+                    "refId": "A"
+                }
+            ],
+            "options": {
+                "reduceOptions": { "values": false, "calcs": ["lastNotNull"], "fields": "" },
+                "orientation": "auto",
+                "textMode": "auto",
+                "colorMode": "background",
+                "graphMode": "none",
+                "justifyMode": "center",
+                "wideLayout": true,
+                "showPercentChange": false
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "color": { "fixedColor": "blue", "mode": "fixed" },
+                    "unit": "short",
+                    "mappings": [],
+                    "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }
+                },
+                "overrides": []
+            }
+        },
+        {
+            "id": 2,
+            "title": "Active Posts",
+            "description": "Posts that are not deleted and not archived",
+            "type": "stat",
+            "datasource": { "type": "postgres", "uid": "postgres-ds" },
+            "gridPos": { "h": 5, "w": 4, "x": 4, "y": 0 },
+            "targets": [
+                {
+                    "datasource": { "type": "postgres", "uid": "postgres-ds" },
+                    "rawQuery": true,
+                    "rawSql": "SELECT COUNT(*) AS \"Active\" FROM posts_${library_id} WHERE NOT is_deleted AND NOT is_archived",
+                    "format": "table",
+                    "refId": "A"
+                }
+            ],
+            "options": {
+                "reduceOptions": { "values": false, "calcs": ["lastNotNull"], "fields": "" },
+                "orientation": "auto",
+                "textMode": "auto",
+                "colorMode": "background",
+                "graphMode": "none",
+                "justifyMode": "center",
+                "wideLayout": true,
+                "showPercentChange": false
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "color": { "fixedColor": "green", "mode": "fixed" },
+                    "unit": "short",
+                    "mappings": [],
+                    "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+                },
+                "overrides": []
+            }
+        },
+        {
+            "id": 4,
+            "title": "Unread Posts",
+            "description": "Active posts that have not been read",
+            "type": "stat",
+            "datasource": { "type": "postgres", "uid": "postgres-ds" },
+            "gridPos": { "h": 5, "w": 4, "x": 8, "y": 0 },
+            "targets": [
+                {
+                    "datasource": { "type": "postgres", "uid": "postgres-ds" },
+                    "rawQuery": true,
+                    "rawSql": "SELECT COUNT(*) AS \"Unread\" FROM posts_${library_id} WHERE NOT is_deleted AND NOT is_archived AND NOT is_read",
+                    "format": "table",
+                    "refId": "A"
+                }
+            ],
+            "options": {
+                "reduceOptions": { "values": false, "calcs": ["lastNotNull"], "fields": "" },
+                "orientation": "auto",
+                "textMode": "auto",
+                "colorMode": "background",
+                "graphMode": "none",
+                "justifyMode": "center",
+                "wideLayout": true,
+                "showPercentChange": false
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "color": { "fixedColor": "orange", "mode": "fixed" },
+                    "unit": "short",
+                    "mappings": [],
+                    "thresholds": { "mode": "absolute", "steps": [{ "color": "orange", "value": null }] }
+                },
+                "overrides": []
+            }
+        },
+        {
+            "id": 3,
+            "title": "Read Posts",
+            "description": "Active posts that have been read",
+            "type": "stat",
+            "datasource": { "type": "postgres", "uid": "postgres-ds" },
+            "gridPos": { "h": 5, "w": 4, "x": 12, "y": 0 },
+            "targets": [
+                {
+                    "datasource": { "type": "postgres", "uid": "postgres-ds" },
+                    "rawQuery": true,
+                    "rawSql": "SELECT COUNT(*) AS \"Read\" FROM posts_${library_id} WHERE NOT is_deleted AND NOT is_archived AND is_read",
+                    "format": "table",
+                    "refId": "A"
+                }
+            ],
+            "options": {
+                "reduceOptions": { "values": false, "calcs": ["lastNotNull"], "fields": "" },
+                "orientation": "auto",
+                "textMode": "auto",
+                "colorMode": "background",
+                "graphMode": "none",
+                "justifyMode": "center",
+                "wideLayout": true,
+                "showPercentChange": false
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "color": { "fixedColor": "dark-green", "mode": "fixed" },
+                    "unit": "short",
+                    "mappings": [],
+                    "thresholds": { "mode": "absolute", "steps": [{ "color": "dark-green", "value": null }] }
+                },
+                "overrides": []
+            }
+        },
+        {
+            "id": 6,
+            "title": "Read / Active Ratio",
+            "description": "Percentage of active posts that have been read",
+            "type": "stat",
+            "datasource": { "type": "postgres", "uid": "postgres-ds" },
+            "gridPos": { "h": 5, "w": 8, "x": 16, "y": 0 },
+            "targets": [
+                {
+                    "datasource": { "type": "postgres", "uid": "postgres-ds" },
+                    "rawQuery": true,
+                    "rawSql": "SELECT CASE WHEN COUNT(*) FILTER (WHERE NOT is_deleted AND NOT is_archived) = 0 THEN 0.0 ELSE ROUND(COUNT(*) FILTER (WHERE NOT is_deleted AND NOT is_archived AND is_read) * 100.0 / COUNT(*) FILTER (WHERE NOT is_deleted AND NOT is_archived), 1) END AS \"Ratio\" FROM posts_${library_id}",
+                    "format": "table",
+                    "refId": "A"
+                }
+            ],
+            "options": {
+                "reduceOptions": { "values": false, "calcs": ["lastNotNull"], "fields": "" },
+                "orientation": "auto",
+                "textMode": "auto",
+                "colorMode": "background",
+                "graphMode": "none",
+                "justifyMode": "center",
+                "wideLayout": true,
+                "showPercentChange": false
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "color": { "mode": "thresholds" },
+                    "unit": "percent",
+                    "decimals": 1,
+                    "min": 0,
+                    "max": 100,
+                    "mappings": [],
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            { "color": "red", "value": null },
+                            { "color": "yellow", "value": 25 },
+                            { "color": "green", "value": 75 }
+                        ]
+                    }
+                },
+                "overrides": []
+            }
+        },
+        {
+            "id": 5,
+            "title": "Favourited Posts",
+            "description": "Active posts marked as favourite",
+            "type": "stat",
+            "datasource": { "type": "postgres", "uid": "postgres-ds" },
+            "gridPos": { "h": 5, "w": 4, "x": 0, "y": 5 },
+            "targets": [
+                {
+                    "datasource": { "type": "postgres", "uid": "postgres-ds" },
+                    "rawQuery": true,
+                    "rawSql": "SELECT COUNT(*) AS \"Favourited\" FROM posts_${library_id} WHERE NOT is_deleted AND NOT is_archived AND is_favorite",
+                    "format": "table",
+                    "refId": "A"
+                }
+            ],
+            "options": {
+                "reduceOptions": { "values": false, "calcs": ["lastNotNull"], "fields": "" },
+                "orientation": "auto",
+                "textMode": "auto",
+                "colorMode": "background",
+                "graphMode": "none",
+                "justifyMode": "center",
+                "wideLayout": true,
+                "showPercentChange": false
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "color": { "fixedColor": "purple", "mode": "fixed" },
+                    "unit": "short",
+                    "mappings": [],
+                    "thresholds": { "mode": "absolute", "steps": [{ "color": "purple", "value": null }] }
+                },
+                "overrides": []
+            }
+        },
+        {
+            "id": 7,
+            "title": "Favourited — Active",
+            "description": "All active favourited posts (read + unread)",
+            "type": "stat",
+            "datasource": { "type": "postgres", "uid": "postgres-ds" },
+            "gridPos": { "h": 5, "w": 4, "x": 4, "y": 5 },
+            "targets": [
+                {
+                    "datasource": { "type": "postgres", "uid": "postgres-ds" },
+                    "rawQuery": true,
+                    "rawSql": "SELECT COUNT(*) AS \"Fav Active\" FROM posts_${library_id} WHERE NOT is_deleted AND NOT is_archived AND is_favorite",
+                    "format": "table",
+                    "refId": "A"
+                }
+            ],
+            "options": {
+                "reduceOptions": { "values": false, "calcs": ["lastNotNull"], "fields": "" },
+                "orientation": "auto",
+                "textMode": "auto",
+                "colorMode": "background",
+                "graphMode": "none",
+                "justifyMode": "center",
+                "wideLayout": true,
+                "showPercentChange": false
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "color": { "fixedColor": "purple", "mode": "fixed" },
+                    "unit": "short",
+                    "mappings": [],
+                    "thresholds": { "mode": "absolute", "steps": [{ "color": "purple", "value": null }] }
+                },
+                "overrides": []
+            }
+        },
+        {
+            "id": 9,
+            "title": "Favourited — Unread",
+            "description": "Active favourited posts not yet read",
+            "type": "stat",
+            "datasource": { "type": "postgres", "uid": "postgres-ds" },
+            "gridPos": { "h": 5, "w": 4, "x": 8, "y": 5 },
+            "targets": [
+                {
+                    "datasource": { "type": "postgres", "uid": "postgres-ds" },
+                    "rawQuery": true,
+                    "rawSql": "SELECT COUNT(*) AS \"Fav Unread\" FROM posts_${library_id} WHERE NOT is_deleted AND NOT is_archived AND is_favorite AND NOT is_read",
+                    "format": "table",
+                    "refId": "A"
+                }
+            ],
+            "options": {
+                "reduceOptions": { "values": false, "calcs": ["lastNotNull"], "fields": "" },
+                "orientation": "auto",
+                "textMode": "auto",
+                "colorMode": "background",
+                "graphMode": "none",
+                "justifyMode": "center",
+                "wideLayout": true,
+                "showPercentChange": false
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "color": { "fixedColor": "light-purple", "mode": "fixed" },
+                    "unit": "short",
+                    "mappings": [],
+                    "thresholds": { "mode": "absolute", "steps": [{ "color": "light-purple", "value": null }] }
+                },
+                "overrides": []
+            }
+        },
+        {
+            "id": 8,
+            "title": "Favourited — Read",
+            "description": "Active favourited posts that have been read",
+            "type": "stat",
+            "datasource": { "type": "postgres", "uid": "postgres-ds" },
+            "gridPos": { "h": 5, "w": 4, "x": 12, "y": 5 },
+            "targets": [
+                {
+                    "datasource": { "type": "postgres", "uid": "postgres-ds" },
+                    "rawQuery": true,
+                    "rawSql": "SELECT COUNT(*) AS \"Fav Read\" FROM posts_${library_id} WHERE NOT is_deleted AND NOT is_archived AND is_favorite AND is_read",
+                    "format": "table",
+                    "refId": "A"
+                }
+            ],
+            "options": {
+                "reduceOptions": { "values": false, "calcs": ["lastNotNull"], "fields": "" },
+                "orientation": "auto",
+                "textMode": "auto",
+                "colorMode": "background",
+                "graphMode": "none",
+                "justifyMode": "center",
+                "wideLayout": true,
+                "showPercentChange": false
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "color": { "fixedColor": "dark-purple", "mode": "fixed" },
+                    "unit": "short",
+                    "mappings": [],
+                    "thresholds": { "mode": "absolute", "steps": [{ "color": "dark-purple", "value": null }] }
+                },
+                "overrides": []
+            }
+        },
+        {
+            "id": 11,
+            "title": "Active — Word Count",
+            "description": "Total words across active posts (custom_body preferred over body_text)",
+            "type": "stat",
+            "datasource": { "type": "postgres", "uid": "postgres-ds" },
+            "gridPos": { "h": 5, "w": 5, "x": 0, "y": 10 },
+            "targets": [
+                {
+                    "datasource": { "type": "postgres", "uid": "postgres-ds" },
+                    "rawQuery": true,
+                    "rawSql": "SELECT COALESCE(SUM(cardinality(regexp_split_to_array(trim(COALESCE(custom_body, body_text)), '\\s+'))), 0) AS \"Active Words\" FROM posts_${library_id} WHERE NOT is_deleted AND NOT is_archived AND COALESCE(custom_body, body_text) IS NOT NULL AND trim(COALESCE(custom_body, body_text)) != ''",
+                    "format": "table",
+                    "refId": "A"
+                }
+            ],
+            "options": {
+                "reduceOptions": { "values": false, "calcs": ["lastNotNull"], "fields": "" },
+                "orientation": "auto",
+                "textMode": "auto",
+                "colorMode": "background",
+                "graphMode": "none",
+                "justifyMode": "center",
+                "wideLayout": true,
+                "showPercentChange": false
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "color": { "fixedColor": "green", "mode": "fixed" },
+                    "unit": "short",
+                    "mappings": [],
+                    "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+                },
+                "overrides": []
+            }
+        },
+        {
+            "id": 12,
+            "title": "Unread — Word Count",
+            "description": "Total words across unread active posts (custom_body preferred over body_text)",
+            "type": "stat",
+            "datasource": { "type": "postgres", "uid": "postgres-ds" },
+            "gridPos": { "h": 5, "w": 5, "x": 5, "y": 10 },
+            "targets": [
+                {
+                    "datasource": { "type": "postgres", "uid": "postgres-ds" },
+                    "rawQuery": true,
+                    "rawSql": "SELECT COALESCE(SUM(cardinality(regexp_split_to_array(trim(COALESCE(custom_body, body_text)), '\\s+'))), 0) AS \"Unread Words\" FROM posts_${library_id} WHERE NOT is_deleted AND NOT is_archived AND NOT is_read AND COALESCE(custom_body, body_text) IS NOT NULL AND trim(COALESCE(custom_body, body_text)) != ''",
+                    "format": "table",
+                    "refId": "A"
+                }
+            ],
+            "options": {
+                "reduceOptions": { "values": false, "calcs": ["lastNotNull"], "fields": "" },
+                "orientation": "auto",
+                "textMode": "auto",
+                "colorMode": "background",
+                "graphMode": "none",
+                "justifyMode": "center",
+                "wideLayout": true,
+                "showPercentChange": false
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "color": { "fixedColor": "orange", "mode": "fixed" },
+                    "unit": "short",
+                    "mappings": [],
+                    "thresholds": { "mode": "absolute", "steps": [{ "color": "orange", "value": null }] }
+                },
+                "overrides": []
+            }
+        },
+        {
+            "id": 13,
+            "title": "Read — Word Count",
+            "description": "Total words across read active posts (custom_body preferred over body_text)",
+            "type": "stat",
+            "datasource": { "type": "postgres", "uid": "postgres-ds" },
+            "gridPos": { "h": 5, "w": 5, "x": 10, "y": 10 },
+            "targets": [
+                {
+                    "datasource": { "type": "postgres", "uid": "postgres-ds" },
+                    "rawQuery": true,
+                    "rawSql": "SELECT COALESCE(SUM(cardinality(regexp_split_to_array(trim(COALESCE(custom_body, body_text)), '\\s+'))), 0) AS \"Read Words\" FROM posts_${library_id} WHERE NOT is_deleted AND NOT is_archived AND is_read AND COALESCE(custom_body, body_text) IS NOT NULL AND trim(COALESCE(custom_body, body_text)) != ''",
+                    "format": "table",
+                    "refId": "A"
+                }
+            ],
+            "options": {
+                "reduceOptions": { "values": false, "calcs": ["lastNotNull"], "fields": "" },
+                "orientation": "auto",
+                "textMode": "auto",
+                "colorMode": "background",
+                "graphMode": "none",
+                "justifyMode": "center",
+                "wideLayout": true,
+                "showPercentChange": false
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "color": { "fixedColor": "dark-green", "mode": "fixed" },
+                    "unit": "short",
+                    "mappings": [],
+                    "thresholds": { "mode": "absolute", "steps": [{ "color": "dark-green", "value": null }] }
+                },
+                "overrides": []
+            }
+        },
+        {
+            "id": 14,
+            "title": "Favourite — Word Count",
+            "description": "Total words across active favourited posts (custom_body preferred over body_text)",
+            "type": "stat",
+            "datasource": { "type": "postgres", "uid": "postgres-ds" },
+            "gridPos": { "h": 5, "w": 5, "x": 15, "y": 10 },
+            "targets": [
+                {
+                    "datasource": { "type": "postgres", "uid": "postgres-ds" },
+                    "rawQuery": true,
+                    "rawSql": "SELECT COALESCE(SUM(cardinality(regexp_split_to_array(trim(COALESCE(custom_body, body_text)), '\\s+'))), 0) AS \"Fav Words\" FROM posts_${library_id} WHERE NOT is_deleted AND NOT is_archived AND is_favorite AND COALESCE(custom_body, body_text) IS NOT NULL AND trim(COALESCE(custom_body, body_text)) != ''",
+                    "format": "table",
+                    "refId": "A"
+                }
+            ],
+            "options": {
+                "reduceOptions": { "values": false, "calcs": ["lastNotNull"], "fields": "" },
+                "orientation": "auto",
+                "textMode": "auto",
+                "colorMode": "background",
+                "graphMode": "none",
+                "justifyMode": "center",
+                "wideLayout": true,
+                "showPercentChange": false
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "color": { "fixedColor": "purple", "mode": "fixed" },
+                    "unit": "short",
+                    "mappings": [],
+                    "thresholds": { "mode": "absolute", "steps": [{ "color": "purple", "value": null }] }
+                },
+                "overrides": []
+            }
+        },
+        {
+            "id": 15,
+            "title": "Posts with Summary",
+            "description": "Active posts where a summary has been generated",
+            "type": "stat",
+            "datasource": { "type": "postgres", "uid": "postgres-ds" },
+            "gridPos": { "h": 5, "w": 4, "x": 20, "y": 10 },
+            "targets": [
+                {
+                    "datasource": { "type": "postgres", "uid": "postgres-ds" },
+                    "rawQuery": true,
+                    "rawSql": "SELECT COUNT(*) AS \"Has Summary\" FROM posts_${library_id} WHERE NOT is_deleted AND NOT is_archived AND summary IS NOT NULL",
+                    "format": "table",
+                    "refId": "A"
+                }
+            ],
+            "options": {
+                "reduceOptions": { "values": false, "calcs": ["lastNotNull"], "fields": "" },
+                "orientation": "auto",
+                "textMode": "auto",
+                "colorMode": "background",
+                "graphMode": "none",
+                "justifyMode": "center",
+                "wideLayout": true,
+                "showPercentChange": false
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "color": { "fixedColor": "blue", "mode": "fixed" },
+                    "unit": "short",
+                    "mappings": [],
+                    "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }
+                },
+                "overrides": []
+            }
+        },
+        {
+            "id": 10,
+            "title": "Posts — Cumulative Growth (All Time)",
+            "description": "Running total of posts over time, bucketed by day using added_at. Ignores the dashboard time picker — always shows the full history.",
+            "type": "timeseries",
+            "datasource": { "type": "postgres", "uid": "postgres-ds" },
+            "gridPos": { "h": 12, "w": 24, "x": 0, "y": 15 },
+            "targets": [
+                {
+                    "datasource": { "type": "postgres", "uid": "postgres-ds" },
+                    "rawQuery": true,
+                    "rawSql": "WITH daily AS (\n  SELECT\n    date_trunc('day', added_at) AS day,\n    COUNT(*)                                                                          AS total,\n    COUNT(*) FILTER (WHERE NOT is_deleted AND NOT is_archived)                        AS active,\n    COUNT(*) FILTER (WHERE NOT is_deleted AND NOT is_archived AND is_read)            AS read_posts\n  FROM posts_${library_id}\n  WHERE added_at IS NOT NULL\n  GROUP BY 1\n)\nSELECT\n  day                                                                                           AS \"time\",\n  SUM(total)      OVER (ORDER BY day ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)         AS \"Total\",\n  SUM(active)     OVER (ORDER BY day ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)         AS \"Active\",\n  SUM(read_posts) OVER (ORDER BY day ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)         AS \"Read\"\nFROM daily\nORDER BY 1",
+                    "format": "time_series",
+                    "refId": "A"
+                }
+            ],
+            "options": {
+                "tooltip": { "mode": "multi", "sort": "none" },
+                "legend": {
+                    "calcs": ["last"],
+                    "displayMode": "list",
+                    "placement": "bottom",
+                    "showLegend": true
+                }
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "unit": "short",
+                    "custom": {
+                        "lineWidth": 2,
+                        "fillOpacity": 8,
+                        "gradientMode": "none",
+                        "showPoints": "never",
+                        "spanNulls": true,
+                        "drawStyle": "line",
+                        "lineInterpolation": "linear"
+                    }
+                },
+                "overrides": [
+                    {
+                        "matcher": { "id": "byName", "options": "Total" },
+                        "properties": [{ "id": "color", "value": { "fixedColor": "blue", "mode": "fixed" } }]
+                    },
+                    {
+                        "matcher": { "id": "byName", "options": "Active" },
+                        "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }]
+                    },
+                    {
+                        "matcher": { "id": "byName", "options": "Read" },
+                        "properties": [{ "id": "color", "value": { "fixedColor": "dark-green", "mode": "fixed" } }]
+                    }
+                ]
+            }
+        }
+    ]
+}

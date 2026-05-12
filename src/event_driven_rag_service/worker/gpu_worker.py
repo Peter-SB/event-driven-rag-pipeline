@@ -87,7 +87,12 @@ class GpuEmbedWorker(BaseWorker):
     ) -> None:
         # Queue name is blank — this worker polls multiple queues manually
         # via _poll_queue; basic_consume is not used.
-        super().__init__(rabbitmq_url, queue_name="", prefetch=max_batch)
+        # heartbeat=0 disables RabbitMQ heartbeats: pika's BlockingConnection
+        # cannot send heartbeats while the thread is blocked in GPU inference
+        # (which can take several minutes). Without this, RabbitMQ closes the
+        # connection mid-batch, causing unacknowledged messages to be requeued
+        # and the same batch to be processed repeatedly.
+        super().__init__(rabbitmq_url, queue_name="", prefetch=max_batch, heartbeat=1000)
         self._model_queues = model_queues
         self._load_model = model_loader
         self._handler = handler
