@@ -131,6 +131,7 @@ async def create_search(req: SearchRequest, request: Request) -> SearchJobRespon
         event = SearchJobCreatedEvent(
             query_job_id=job_id,
             query=req.query,
+            embedding_profile=embed_cfg.model,
             trace_id=trace_id,
             parent_span_id=parent_span_id,
         )
