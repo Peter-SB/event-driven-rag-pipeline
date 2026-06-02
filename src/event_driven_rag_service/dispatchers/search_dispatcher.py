@@ -25,7 +25,8 @@ def _record_queue_lag(event: dict, queue_name: str) -> None:
             pass
 
 
-_QUERY_EMBED_CONFIG = EMBED_CONFIGS["query"]
+# Map model name → EmbedConfig so the dispatcher can route by embedding_profile.
+_MODEL_TO_CONFIG = {cfg.model: cfg for cfg in EMBED_CONFIGS.values()}
 
 
 class SearchDispatcher:
@@ -50,16 +51,25 @@ class SearchDispatcher:
             "search_job.created", consumer_group=consumer_groups.SEARCH_JOB_CREATED
         ):
             _record_queue_lag(event, "search")
+            # Use the model that embedded the chunks so dimensions match at search time.
+            profile = event["embedding_profile"]
+            embed_cfg = _MODEL_TO_CONFIG.get(profile)
+            if embed_cfg is None:
+                logger.error(
+                    "SearchDispatcher: unknown embedding_profile %r for job %s — skipping",
+                    profile, event.get("query_job_id"),
+                )
+                continue
             task = EmbedTask(
                 task_type="query",
-                model_name=_QUERY_EMBED_CONFIG.model,
+                model_name=embed_cfg.model,
                 query=event["query"],
                 query_job_id=event["query_job_id"],
                 trace_id=event.get("trace_id"),
             )
             await embedding_ex.publish(
                 aio_pika.Message(task.model_dump_json().encode()),
-                routing_key=_QUERY_EMBED_CONFIG.queue,
+                routing_key=embed_cfg.queue,
             )
             logger.debug(
                 "SearchDispatcher: dispatched query embed task for job_id=%s",

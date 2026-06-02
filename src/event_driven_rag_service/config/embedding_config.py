@@ -21,11 +21,10 @@ CHUNK_CONFIG = ChunkConfig(
     chunk_overlap=0.10,
 )
 
-# Keyed by task_type — determines which model embeds each chunk type.
-# "summary_title" is treated the same as "summary" for embedding purposes.
+# Keyed by chunk type — determines which model embeds each chunk type.
+# Search queries use the config for the chunk type being searched (no separate query entry).
 EMBED_CONFIGS: dict[str, EmbedConfig] = {
     "body":          EmbedConfig(model="BAAI/bge-base-en-v1.5",     queue="gpu.embed.bge-base-en-v1.5",     dim=768),
-    "query":         EmbedConfig(model="BAAI/bge-base-en-v1.5",     queue="gpu.embed.bge-base-en-v1.5",     dim=768),
     "title":         EmbedConfig(model="BAAI/bge-small-en-v1.5",    queue="gpu.embed.bge-small-en-v1.5",    dim=384),
     "summary_title": EmbedConfig(model="Qwen/Qwen3-0.6B",           queue="gpu.embed.qwen3-0.6b",           dim=1024),
     "analysis":      EmbedConfig(model="Qwen/Qwen3-0.6B",           queue="gpu.embed.qwen3-0.6b",           dim=1024),

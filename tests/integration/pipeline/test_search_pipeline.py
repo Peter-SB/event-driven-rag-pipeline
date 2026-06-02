@@ -175,7 +175,7 @@ async def test_search_dispatcher_publishes_embed_task_for_query(clean_pipeline_t
 
     # Publish search_job.created with a query
     job_id = str(uuid.uuid4())
-    event = SearchJobCreatedEvent(query_job_id=job_id, query="what is retrieval augmented generation?")
+    event = SearchJobCreatedEvent(query_job_id=job_id, query="what is retrieval augmented generation?", embedding_profile=_MODEL_NAME)
     await bus.publish("search_job.created", event.to_dict())
 
     # Run SearchDispatcher

@@ -14,6 +14,7 @@ class SearchJobCreatedEvent(BaseEvent):
     event_type: str = "search_job.created"
     query_job_id: str
     query: str  # Carried inline so SearchDispatcher can create EmbedTask without a DB lookup
+    embedding_profile: str  # Must match the model used to embed the chunks
 
 
 class SearchQueryEmbeddedEvent(BaseEvent):

@@ -224,6 +224,7 @@ async def test_search_dispatcher_consumes_search_job_created(clean_pipeline_tabl
     event = SearchJobCreatedEvent(
         query_job_id=job_id,
         query="what is RAG?",
+        embedding_profile="BAAI/bge-base-en-v1.5",
     )
     await bus.publish("search_job.created", event.to_dict())
 

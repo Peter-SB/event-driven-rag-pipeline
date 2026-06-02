@@ -55,6 +55,7 @@ async def test_search_dispatcher_publishes_embed_task_for_query():
         "query_job_id": job_id,
         "query": query_text,
         "trace_id": trace_id,
+        "embedding_profile": "BAAI/bge-base-en-v1.5",
     }
 
     mock_bus = MagicMock()
@@ -113,6 +114,7 @@ async def test_search_dispatcher_handles_missing_trace_id():
         "event_type": "search_job.created",
         "query_job_id": job_id,
         "query": "test query",
+        "embedding_profile": "BAAI/bge-base-en-v1.5",
     }
 
     mock_bus = MagicMock()
@@ -164,3 +166,83 @@ async def test_search_dispatcher_subscribes_to_correct_topic():
     # Check consumer group
     kwargs = call_args[1]
     assert "consumer_group" in kwargs, "consumer_group should be specified"
+
+
+async def _run_dispatcher_with_event(event: dict) -> tuple[str, dict]:
+    """Helper: run dispatcher with a single event, return (routing_key, EmbedTask dict)."""
+    mock_channel = AsyncMock()
+    mock_exchange = AsyncMock()
+    mock_channel.declare_exchange.return_value = mock_exchange
+    mock_rmq = AsyncMock()
+    mock_rmq.channel.return_value = mock_channel
+
+    mock_bus = MagicMock()
+    mock_bus.subscribe = MagicMock(return_value=FakeEventBusSubscription([event]))
+
+    dispatcher = SearchDispatcher(mock_rmq, mock_bus)
+    try:
+        await asyncio.wait_for(dispatcher.run(), timeout=1.0)
+    except asyncio.TimeoutError:
+        pass
+
+    call_args = mock_exchange.publish.call_args
+    routing_key = call_args[1]["routing_key"]
+    task_dict = json.loads(call_args[0][0].body.decode())
+    return routing_key, task_dict
+
+
+@pytest.mark.asyncio
+async def test_search_dispatcher_routes_title_model_to_small_queue():
+    """embedding_profile=bge-small (384-dim) must route to the small-model queue."""
+    event = {
+        "event_type": "search_job.created",
+        "query_job_id": str(uuid.uuid4()),
+        "query": "title search query",
+        "embedding_profile": "BAAI/bge-small-en-v1.5",
+    }
+    routing_key, task_dict = await _run_dispatcher_with_event(event)
+
+    assert routing_key == "gpu.embed.bge-small-en-v1.5", routing_key
+    assert task_dict["model_name"] == "BAAI/bge-small-en-v1.5"
+
+
+@pytest.mark.asyncio
+async def test_search_dispatcher_routes_body_model_to_base_queue():
+    """embedding_profile=bge-base (768-dim) must route to the base-model queue."""
+    event = {
+        "event_type": "search_job.created",
+        "query_job_id": str(uuid.uuid4()),
+        "query": "body search query",
+        "embedding_profile": "BAAI/bge-base-en-v1.5",
+    }
+    routing_key, task_dict = await _run_dispatcher_with_event(event)
+
+    assert routing_key == "gpu.embed.bge-base-en-v1.5", routing_key
+    assert task_dict["model_name"] == "BAAI/bge-base-en-v1.5"
+
+
+@pytest.mark.asyncio
+async def test_search_dispatcher_skips_event_with_unknown_profile():
+    """An unrecognised embedding_profile must be skipped — no task published."""
+    mock_channel = AsyncMock()
+    mock_exchange = AsyncMock()
+    mock_channel.declare_exchange.return_value = mock_exchange
+    mock_rmq = AsyncMock()
+    mock_rmq.channel.return_value = mock_channel
+
+    event = {
+        "event_type": "search_job.created",
+        "query_job_id": str(uuid.uuid4()),
+        "query": "unknown model query",
+        "embedding_profile": "unknown/model-xyz",
+    }
+    mock_bus = MagicMock()
+    mock_bus.subscribe = MagicMock(return_value=FakeEventBusSubscription([event]))
+
+    dispatcher = SearchDispatcher(mock_rmq, mock_bus)
+    try:
+        await asyncio.wait_for(dispatcher.run(), timeout=1.0)
+    except asyncio.TimeoutError:
+        pass
+
+    mock_exchange.publish.assert_not_called()
