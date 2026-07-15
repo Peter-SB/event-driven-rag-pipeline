@@ -33,6 +33,8 @@ dependencies = [
 
     # Utilities
     "python-dotenv>=1.0",
+    "jinja2>=3.1",
+    "python-multipart>=0.0.9",
 
     # Observability — always installed, exporters only activate when OTEL_ENABLED=true
     # API package: zero-overhead no-op tracer/meter when SDK is not configured

@@ -1,0 +1,75 @@
+<div id="results-content"
+  {% if status not in ['complete', 'failed'] %}
+  hx-get="/ui/search/{{ job_id }}/poll"
+  hx-trigger="load delay:2500ms"
+  hx-target="this"
+  hx-swap="outerHTML"
+  {% endif %}
+>
+  {% if status == 'complete' %}
+    <div class="results-header">
+      <h2>Results</h2>
+      <span class="count">{{ results | length }} found</span>
+    </div>
+
+    {% if results %}
+    <div class="results-list">
+      {% for result in results %}
+      <div class="result-card">
+        <div class="card-header">
+          <div class="card-title">
+            {% if result.metadata and result.metadata.get('title') %}
+              {{ result.metadata['title'] }}
+            {% else %}
+              Post #{{ result.post_id }}
+            {% endif %}
+          </div>
+          <div class="card-meta">
+            <span class="score-badge">{{ "%.4f" | format(result.score) }}</span>
+            <a class="post-id" href="/ui/post/{{ library_id }}/{{ result.post_id }}">post {{ result.post_id }}</a>
+          </div>
+        </div>
+        <div class="card-text">
+          {% set preview = result.text[:300] %}
+          {% if result.text | length > 300 %}
+            <span class="text-preview" id="preview-{{ loop.index }}">{{ preview }}…</span>
+            <span class="text-full" id="full-{{ loop.index }}">{{ result.text }}</span>
+            <button class="load-more-btn" id="btn-{{ loop.index }}" onclick="expandText({{ loop.index }})">Load more…</button>
+          {% else %}
+            <span>{{ result.text }}</span>
+          {% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+
+    {% else %}
+    <div class="state-card">
+      <div class="state-icon">🔍</div>
+      <div class="state-title">No results found</div>
+      <div class="state-subtitle">Try a different query or chunk type</div>
+    </div>
+    {% endif %}
+
+  {% elif status == 'failed' %}
+    <div class="state-card">
+      <div class="state-icon">❌</div>
+      <div class="state-title">Search failed</div>
+      <div class="state-subtitle">The pipeline encountered an error processing this job</div>
+      {% if error %}
+      <div class="error-detail">{{ error }}</div>
+      {% endif %}
+    </div>
+
+  {% else %}
+    <div class="state-card">
+      <div class="spinner"></div>
+      <div class="state-title">Processing…</div>
+      <div class="state-subtitle">
+        {% if status == 'embedding' %}Embedding your query
+        {% elif status == 'searching' %}Running vector search
+        {% else %}{{ status }}{% endif %}
+      </div>
+    </div>
+  {% endif %}
+</div>

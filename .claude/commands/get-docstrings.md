@@ -1,4 +1,4 @@
----
+<!-- ---
 allowed-tools: Bash
 description: >
   Extract file-level docstrings from all code files. Use this before loading
@@ -6,7 +6,7 @@ description: >
   optional path filter and --include-tests flag.
 argument-hint: "[path-filter] [--include-tests] [--format text|json|markdown]"
 ---
-
+ -->
 # Get Project Docstrings
 
 Run the docstring extraction tool and present a structured summary of what

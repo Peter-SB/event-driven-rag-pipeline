@@ -24,9 +24,15 @@ Test strategy
 3. Poll GET /search/{job_id} until status is 'complete' or 'failed'.
 4. Assert results are present and structurally valid.
 
-The search results use MOCK_EMBEDDINGS=1, so vectors are deterministic
-(not semantically meaningful) — we only verify the pipeline runs end-to-end
-and returns valid structured results.
+Works against either embedding mode of the GPU worker (its own
+MOCK_EMBEDDINGS env var in docker-compose.yml / .env — this test process
+cannot toggle that from the outside). With MOCK_EMBEDDINGS=1 vectors are
+deterministic and not semantically meaningful; either way we only verify the
+pipeline runs end-to-end and returns valid structured results. Under real
+embeddings the worker cold-loads models, so waits below use
+_EMBED_POLL_TIMEOUT (default 120s, override with E2E_EMBED_POLL_TIMEOUT) as
+their ceiling — this only costs time when a wait is actually failing, since
+every poll loop breaks out as soon as its condition is met.
 """
 from __future__ import annotations
 
@@ -40,9 +46,12 @@ import asyncpg
 import httpx
 import pytest
 
+pytestmark = pytest.mark.e2e
+
 logger = logging.getLogger(__name__)
 
-os.environ.setdefault("MOCK_EMBEDDINGS", "1")
+# Ceiling for polls that wait on GPU embedding work (model load + encode).
+_EMBED_POLL_TIMEOUT = float(os.getenv("E2E_EMBED_POLL_TIMEOUT", "120"))
 
 _E2E_LIBRARY = "searchtest"
 _CHUNK_TABLE = f"posts_{_E2E_LIBRARY}_chunks_body_baai_bge_base_en_v1_5"
@@ -56,7 +65,7 @@ async def _wait_for_embeddings(
     pool: asyncpg.Pool,
     chunk_table: str,
     post_ids: list[int],
-    timeout: float = 30.0,
+    timeout: float = _EMBED_POLL_TIMEOUT,
     interval: float = 0.5,
 ) -> None:
     """Block until all posts have at least one embedded chunk in *chunk_table*."""
@@ -85,7 +94,7 @@ async def _wait_for_embeddings(
 async def _poll_search_job(
     client: httpx.AsyncClient,
     job_id: str,
-    timeout: float = 30.0,
+    timeout: float = _EMBED_POLL_TIMEOUT,
     interval: float = 0.5,
 ) -> dict:
     """Poll GET /search/{job_id} until terminal status, then return the response body."""
@@ -215,7 +224,7 @@ async def test_full_search_pipeline_with_seeded_chunks(
     logger.info("Synced %d posts for library=%s", len(post_ids), _E2E_LIBRARY)
 
     # Step 2: Wait for the ingest pipeline to produce embeddings
-    await _wait_for_embeddings(postgres_pool_e2e, _CHUNK_TABLE, post_ids, timeout=30.0)
+    await _wait_for_embeddings(postgres_pool_e2e, _CHUNK_TABLE, post_ids, timeout=_EMBED_POLL_TIMEOUT)
     logger.info("Embeddings ready for all %d posts in %s", len(post_ids), _CHUNK_TABLE)
 
     # Step 3: POST /search
@@ -247,7 +256,7 @@ async def test_full_search_pipeline_with_seeded_chunks(
     # assert payload["payload"]["query"] == "retrieval augmented generation vector database"
 
     # Step 4: Poll until complete
-    result_body = await _poll_search_job(search_e2e_client, job_id, timeout=20.0)
+    result_body = await _poll_search_job(search_e2e_client, job_id, timeout=_EMBED_POLL_TIMEOUT)
 
     assert result_body["status"] == "complete", (
         f"Search job failed: error={result_body.get('error')}"

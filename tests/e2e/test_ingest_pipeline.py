@@ -5,11 +5,24 @@ Verifies the full pipeline against the running Docker Compose stack:
     POST /posts/sync → post.synced event → chunk tasks → chunks in Postgres
                      → embed tasks → embedding vectors in Postgres
 
-Requires the full stack running with MOCK_EMBEDDINGS=1 on the GPU worker
-(set in docker-compose.yml) so tests complete in seconds without real GPU:
+Requires the full stack running:
 
     docker compose up -d
     pytest tests/e2e/ -m e2e
+
+Works against either embedding mode of the GPU worker, controlled by the
+GPU worker's own MOCK_EMBEDDINGS env var in docker-compose.yml / .env —
+this test process does not (and cannot) toggle that from the outside:
+
+- MOCK_EMBEDDINGS=1 (default): deterministic mock vectors, tests finish
+  in seconds.
+- MOCK_EMBEDDINGS=0: real SentenceTransformer models. The worker cold-loads
+  and swaps between bge-base, bge-small, and Qwen3-0.6B per queue, which can
+  take tens of seconds per model on first use. All embedding-completion polls
+  below use _EMBED_POLL_TIMEOUT (default 120s, override with
+  E2E_EMBED_POLL_TIMEOUT) as their ceiling so the suite works either way —
+  the ceiling only costs time when a poll is actually failing, since every
+  loop breaks out as soon as its condition is met.
 
 Tested flow
 -----------
@@ -17,7 +30,7 @@ Tested flow
 2. PostDispatcher reads event and queues chunk tasks via RabbitMQ
 3. CpuChunkWorker processes tasks and writes chunks to Postgres
 4. ChunkDispatcher reads chunks.created event and queues embed tasks
-5. GpuEmbedWorker embeds (mock) and persists vectors to chunk table
+5. GpuEmbedWorker embeds and persists vectors to chunk table
 
 Event assertions
 ----------------
@@ -39,10 +52,16 @@ import httpx
 from event_driven_rag_service.data_models.post import Post
 from event_driven_rag_service.repository.chunk_repository import ChunkRepository
 
+pytestmark = pytest.mark.e2e
+
 logger = logging.getLogger(__name__)
 
-# Ensure MOCK_EMBEDDINGS is set for GPU worker
-os.environ["MOCK_EMBEDDINGS"] = "1"
+# Ceiling for polls that wait on GPU embedding work (model load + encode).
+# Chunk-creation polls stay on their own short timeouts below since chunking
+# is CPU-only and unaffected by the embedding model / MOCK_EMBEDDINGS setting.
+_EMBED_POLL_TIMEOUT = float(os.getenv("E2E_EMBED_POLL_TIMEOUT", "120"))
+_EMBED_POLL_INTERVAL = 0.5
+_EMBED_POLL_ATTEMPTS = int(_EMBED_POLL_TIMEOUT / _EMBED_POLL_INTERVAL)
 
 
 # ---------------------------------------------------------------------------
@@ -282,9 +301,9 @@ async def test_sync_post_triggers_chunk_and_embed_pipeline(
     assert all(c["text"] and len(c["text"]) > 0 for c in chunks), f"Chunk texts should be non-empty, got {[c['text'] for c in chunks]!r}"
     logger.info(f"Chunk validation passed: {len(chunk_ids)} chunks with valid structure")
 
-    # Step 6: Poll for embeddings to be written (up to 10 seconds)
+    # Step 6: Poll for embeddings to be written (real models may need a cold load)
     embeddings = []
-    for attempt in range(20):  # 20 attempts * 0.5s = 10s max wait
+    for attempt in range(_EMBED_POLL_ATTEMPTS):
         async with postgres_pool_e2e.acquire() as conn:
             rows = await conn.fetch(
                 f"""
@@ -298,11 +317,11 @@ async def test_sync_post_triggers_chunk_and_embed_pipeline(
                 embeddings = rows
                 break
 
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(_EMBED_POLL_INTERVAL)
 
     assert (
         len(embeddings) == len(chunk_ids)
-    ), f"Expected {len(chunk_ids)} embeddings, found {len(embeddings)}"
+    ), f"Expected {len(chunk_ids)} embeddings, found {len(embeddings)} after {_EMBED_POLL_TIMEOUT}s"
     logger.info(f"All {len(embeddings)} chunks have embeddings")
 
     # Step 7: Verify embedding.completed event was published
@@ -346,7 +365,7 @@ async def test_sync_post_triggers_chunk_and_embed_pipeline(
     # Step 8.1: Verify embeddings for title chunk
     title_chunk_table = "posts_e2e_chunks_title_baai_bge_small_en_v1_5"
     title_embeddings = []
-    for attempt in range(20):  # 20 attempts * 0.5s = 10s max wait
+    for attempt in range(_EMBED_POLL_ATTEMPTS):
         async with postgres_pool_e2e.acquire() as conn:
             try:
                 titles = await conn.fetch(
@@ -364,7 +383,9 @@ async def test_sync_post_triggers_chunk_and_embed_pipeline(
                 # Table might not exist if title chunking hasn't run
                 pass
 
-        await asyncio.sleep(0.5) 
+        await asyncio.sleep(_EMBED_POLL_INTERVAL)
+    else:
+        assert False, f"No title embeddings found for post_id={post_id} after {_EMBED_POLL_TIMEOUT}s"
 
     logger.info("E2E pipeline test completed successfully")
 
@@ -463,10 +484,13 @@ async def test_multiple_posts_sync_concurrently(
             event["chunk_count"],
         )
 
-    # Verify each post produced an embedding.completed event
+    # Verify each post produced an embedding.completed event.
+    # No prior row-level poll precedes this one, so — unlike the fetch_events
+    # calls above — it must itself absorb the full cold-load time under real
+    # embeddings.
     for pid in post_ids:
         events = await fetch_events(
-            postgres_pool_e2e, "embedding.completed", pid, timeout=5.0
+            postgres_pool_e2e, "embedding.completed", pid, timeout=_EMBED_POLL_TIMEOUT
         )
         assert len(events) >= 1, f"No embedding.completed event for post_id={pid}"
         event = events[0]
@@ -607,9 +631,9 @@ async def test_title_chunking_and_embedding_pipeline(
         title_cc_event["chunk_count"],
     )
 
-    # Step 5: Poll for title embeddings to be written
+    # Step 5: Poll for title embeddings to be written (real models may need a cold load)
     title_embeddings = []
-    for attempt in range(20):  # 20 attempts * 0.5s = 10s max wait
+    for attempt in range(_EMBED_POLL_ATTEMPTS):
         async with postgres_pool_e2e.acquire() as conn:
             rows = await conn.fetch(
                 f"""
@@ -621,10 +645,10 @@ async def test_title_chunking_and_embedding_pipeline(
             if len(rows) == len(title_chunks):
                 title_embeddings = rows
                 break
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(_EMBED_POLL_INTERVAL)
 
     assert len(title_embeddings) == len(title_chunks), (
-        f"Expected {len(title_chunks)} title embeddings, found {len(title_embeddings)}"
+        f"Expected {len(title_chunks)} title embeddings, found {len(title_embeddings)} after {_EMBED_POLL_TIMEOUT}s"
     )
     logger.info(f"All {len(title_embeddings)} title chunks have embeddings")
 
@@ -806,11 +830,12 @@ async def test_summary_title_chunking_and_embedding_pipeline(
     )
 
     # Step 6: Poll for summary_title embeddings to be written.
-    # Qwen3-0.6B is the third queue in GPU worker priority order (after bge-base and bge-small),
-    # so we allow extra time: bge-base load (~12s) + bge-small load (~5s) + qwen3 load (~60s)
-    # on first run where the model is not yet cached in the container.
+    # Qwen3-0.6B is the third queue in GPU worker priority order (after bge-base
+    # and bge-small), so under real embeddings this can be the slowest of the
+    # three models to come online — _EMBED_POLL_TIMEOUT covers a full cold
+    # load + swap of all three.
     summary_embeddings = []
-    for attempt in range(240):  # 120s max wait
+    for attempt in range(_EMBED_POLL_ATTEMPTS):
         async with postgres_pool_e2e.acquire() as conn:
             rows = await conn.fetch(
                 f"""
@@ -822,7 +847,7 @@ async def test_summary_title_chunking_and_embedding_pipeline(
             if len(rows) == len(summary_chunks):
                 summary_embeddings = rows
                 break
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(_EMBED_POLL_INTERVAL)
 
     assert len(summary_embeddings) == len(summary_chunks), (
         f"Expected {len(summary_chunks)} summary embeddings, found {len(summary_embeddings)}"

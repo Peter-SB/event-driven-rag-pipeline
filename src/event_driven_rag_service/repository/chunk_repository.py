@@ -101,6 +101,23 @@ class ChunkRepository:
 
         logger.info("ChunkRepository: table '%s' ready (dim=%d)", table_name, vector_dim)
 
+    async def table_exists(self, table_name: str) -> bool:
+        """Return True if *table_name* exists in the current database.
+
+        Used to validate search settings up front, before dispatching a job
+        into the async pipeline (embedding a query is pointless if the chunk
+        table it will search against was never created).
+
+        Args:
+            table_name: The table to check.
+        """
+        table_name = table_name.lower()
+        async with self._pool.acquire() as conn:
+            return await conn.fetchval(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = $1)",
+                table_name,
+            )
+
     async def create_hnsw_index(self, table_name: str) -> None:
         """Create the HNSW vector index.  Run once after initial bulk load.
 
@@ -279,11 +296,37 @@ class ChunkRepository:
                     params,
                 )
 
+    async def get_post_embeddings(self, post_id: int, table_name: str) -> list[list[float]]:
+        """Return all embedding vectors for chunks of *post_id* that have been embedded.
+
+        Args:
+            post_id: The post whose chunk embeddings to fetch.
+            table_name: The chunk table to query.
+        """
+        table_name = table_name.lower()
+        try:
+            async with self._pool.acquire() as conn:
+                rows = await conn.fetch(
+                    f"SELECT embedding FROM {table_name} WHERE post_id = $1 AND embedding IS NOT NULL",
+                    post_id,
+                )
+        except asyncpg.exceptions.UndefinedTableError:
+            raise ChunkTableNotFoundError(table_name)
+        result = []
+        for row in rows:
+            emb = row["embedding"]
+            if isinstance(emb, str):
+                result.append([float(x) for x in emb.strip("[]").split(",")])
+            else:
+                result.append(list(emb))
+        return result
+
     async def search_nearest(
         self,
         table_name: str,
         query_vector: list[float],
         k: int,
+        exclude_post_id: Optional[int] = None,
     ) -> list[dict[str, Any]]:
         """Return the top-k chunks nearest to *query_vector* by cosine distance.
 
@@ -298,18 +341,34 @@ class ChunkRepository:
         table_name = table_name.lower()
         embedding_str = "[" + ",".join(str(float(x)) for x in query_vector) + "]"
         async with self._pool.acquire() as conn:
-            rows = await conn.fetch(
-                f"""
-                SELECT id, post_id, text, metadata,
-                       1.0 - (embedding <=> $1::vector) AS score
-                FROM {table_name}
-                WHERE embedding IS NOT NULL
-                ORDER BY embedding <=> $1::vector ASC
-                LIMIT $2
-                """,
-                embedding_str,
-                k,
-            )
+            if exclude_post_id is not None:
+                rows = await conn.fetch(
+                    f"""
+                    SELECT id, post_id, text, metadata,
+                           1.0 - (embedding <=> $1::vector) AS score
+                    FROM {table_name}
+                    WHERE embedding IS NOT NULL
+                      AND post_id != $3
+                    ORDER BY embedding <=> $1::vector ASC
+                    LIMIT $2
+                    """,
+                    embedding_str,
+                    k,
+                    exclude_post_id,
+                )
+            else:
+                rows = await conn.fetch(
+                    f"""
+                    SELECT id, post_id, text, metadata,
+                           1.0 - (embedding <=> $1::vector) AS score
+                    FROM {table_name}
+                    WHERE embedding IS NOT NULL
+                    ORDER BY embedding <=> $1::vector ASC
+                    LIMIT $2
+                    """,
+                    embedding_str,
+                    k,
+                )
         return [
             {
                 "id": str(row["id"]),

@@ -6,6 +6,7 @@ no lifespan.  Matches the pattern used by tests/unit/api/test_sync.py.
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi import FastAPI
@@ -18,6 +19,18 @@ from tests.utils.factories import FakeEventBus
 # ---------------------------------------------------------------------------
 # Fakes
 # ---------------------------------------------------------------------------
+
+class FakeChunkRepo:
+    """Reports whether the chunk table exists — controls the pre-search validation."""
+
+    def __init__(self, exists: bool = True) -> None:
+        self.exists = exists
+        self.checked_tables: list[str] = []
+
+    async def table_exists(self, table_name: str) -> bool:
+        self.checked_tables.append(table_name)
+        return self.exists
+
 
 class FakeSearchJobRepo:
     def __init__(self) -> None:
@@ -63,6 +76,7 @@ def app_with_fakes():
     test_app.include_router(search_router)
     test_app.state.search_job_repo = FakeSearchJobRepo()
     test_app.state.event_bus = FakeEventBus()
+    test_app.state.pool = MagicMock()
     return test_app
 
 
@@ -70,6 +84,14 @@ def app_with_fakes():
 def client(app_with_fakes):
     with TestClient(app_with_fakes) as c:
         yield c
+
+
+@pytest.fixture(autouse=True)
+def fake_chunk_repo():
+    """By default, the chunk table always exists — most tests aren't about validation."""
+    fake = FakeChunkRepo(exists=True)
+    with patch("event_driven_rag_service.api.search.ChunkRepository", return_value=fake):
+        yield fake
 
 
 # ---------------------------------------------------------------------------
@@ -177,6 +199,40 @@ def test_create_search_k_over_max_returns_422(client):
         json={"query": "test", "chunk_type": "body", "k": 101, "library_id": "main"},
     )
     assert response.status_code == 422
+
+
+def test_create_search_missing_chunk_table_returns_404(client, fake_chunk_repo):
+    """POST /search should 404 up front when the chunk table was never created,
+    instead of creating a job that will fail later in the async pipeline."""
+    fake_chunk_repo.exists = False
+    response = client.post(
+        "/search/",
+        json={"query": "test", "chunk_type": "body", "k": 5, "library_id": "neversynced"},
+    )
+    assert response.status_code == 404
+    assert "neversynced" in response.json()["detail"]
+
+
+def test_create_search_missing_chunk_table_does_not_create_job(client, fake_chunk_repo):
+    """A validation failure must not create a job or publish an event."""
+    fake_chunk_repo.exists = False
+    client.post(
+        "/search/",
+        json={"query": "test", "chunk_type": "body", "k": 5, "library_id": "neversynced"},
+    )
+    repo: FakeSearchJobRepo = client.app.state.search_job_repo
+    assert repo.created == []
+    bus: FakeEventBus = client.app.state.event_bus
+    assert bus.drain_topic("search_job.created") == []
+
+
+def test_create_search_checks_correct_table_name(client, fake_chunk_repo):
+    """The validation check must use the same table name the job will be created with."""
+    client.post(
+        "/search/",
+        json={"query": "test", "chunk_type": "title", "k": 5, "library_id": "work"},
+    )
+    assert fake_chunk_repo.checked_tables == ["posts_work_chunks_title_baai_bge_small_en_v1_5"]
 
 
 def test_create_search_title_chunk_type_uses_correct_table(client):

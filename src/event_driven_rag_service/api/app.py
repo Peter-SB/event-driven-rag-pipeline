@@ -34,6 +34,7 @@ from event_driven_rag_service.repository.search_job_repository import SearchJobR
 from event_driven_rag_service.api.sync import router as sync_router
 from event_driven_rag_service.api.sync_legacy import router as sync_legacy_router
 from event_driven_rag_service.api.search import router as search_router
+from event_driven_rag_service.api.ui import router as ui_router
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +93,7 @@ app = FastAPI(
 app.include_router(sync_router)
 app.include_router(sync_legacy_router)
 app.include_router(search_router)
+app.include_router(ui_router)
 
 
 @app.get("/health", tags=["ops"])

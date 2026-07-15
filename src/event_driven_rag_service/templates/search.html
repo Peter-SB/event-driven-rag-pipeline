@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RAG Search</title>
+  <script src="https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #f0f2f5;
+      color: #1a1a2e;
+      min-height: 100vh;
+    }
+
+    header {
+      background: #1a1a2e;
+      color: #fff;
+      padding: 1rem 2rem;
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+    header h1 { font-size: 1.25rem; font-weight: 600; letter-spacing: -0.02em; }
+    header .subtitle { font-size: 0.8rem; opacity: 0.5; margin-left: auto; }
+
+    main { max-width: 1100px; margin: 2rem auto; padding: 0 1.5rem; }
+
+    /* --- Search form --- */
+    .search-card {
+      background: #fff;
+      border-radius: 12px;
+      padding: 1.5rem;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+      margin-bottom: 2rem;
+    }
+    .search-card h2 { font-size: 1rem; font-weight: 600; margin-bottom: 1rem; color: #444; }
+
+    .form-row {
+      display: grid;
+      grid-template-columns: 1fr 140px 180px 80px auto;
+      gap: 0.75rem;
+      align-items: end;
+    }
+
+    .field { display: flex; flex-direction: column; gap: 0.35rem; }
+    .field label { font-size: 0.72rem; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: 0.05em; }
+
+    input[type="text"], input[type="number"], select {
+      padding: 0.55rem 0.75rem;
+      border: 1.5px solid #e0e0e0;
+      border-radius: 8px;
+      font-size: 0.9rem;
+      background: #fafafa;
+      color: #1a1a2e;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    input[type="text"]:focus, input[type="number"]:focus, select:focus {
+      border-color: #6366f1;
+      background: #fff;
+    }
+    input[name="query"] { font-size: 1rem; }
+
+    button[type="submit"] {
+      padding: 0.55rem 1.25rem;
+      background: #6366f1;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s, transform 0.1s;
+      white-space: nowrap;
+    }
+    button[type="submit"]:hover { background: #4f46e5; }
+    button[type="submit"]:active { transform: scale(0.97); }
+    button[type="submit"].htmx-request { opacity: 0.7; pointer-events: none; }
+
+    /* --- Jobs table --- */
+    .jobs-section h2 { font-size: 1rem; font-weight: 600; color: #444; margin-bottom: 0.75rem; }
+
+    .jobs-table-wrap {
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+      overflow: hidden;
+    }
+
+    table { width: 100%; border-collapse: collapse; }
+    thead { background: #f7f8fc; }
+    th {
+      padding: 0.65rem 1rem;
+      text-align: left;
+      font-size: 0.72rem;
+      font-weight: 700;
+      color: #888;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      border-bottom: 1.5px solid #eee;
+    }
+    td {
+      padding: 0.75rem 1rem;
+      font-size: 0.875rem;
+      border-bottom: 1px solid #f0f0f0;
+      vertical-align: middle;
+    }
+    tbody tr:last-child td { border-bottom: none; }
+
+    .job-row { transition: background 0.15s; }
+    .job-row.clickable { cursor: pointer; }
+    .job-row.clickable:hover { background: #f5f5ff; }
+
+    .query-cell {
+      max-width: 300px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-weight: 500;
+    }
+
+    /* --- Status badges --- */
+    .badge {
+      display: inline-block;
+      padding: 0.2rem 0.6rem;
+      border-radius: 20px;
+      font-size: 0.72rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .badge-embedding  { background: #dbeafe; color: #1d4ed8; }
+    .badge-searching  { background: #fef9c3; color: #a16207; }
+    .badge-complete   { background: #dcfce7; color: #166534; }
+    .badge-failed     { background: #fee2e2; color: #991b1b; }
+
+    .results-count { font-size: 0.8rem; color: #888; }
+
+    .error-row { color: #991b1b; font-style: italic; }
+
+    .empty-state {
+      text-align: center;
+      padding: 3rem 1rem;
+      color: #aaa;
+      font-size: 0.875rem;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+  </svg>
+  <h1>RAG Search</h1>
+  <span class="subtitle">Event-Driven Pipeline</span>
+</header>
+
+<main>
+  <div class="search-card">
+    <h2>New Search</h2>
+    <form
+      hx-post="/ui/search/submit"
+      hx-target="#jobs-body"
+      hx-swap="afterbegin"
+    >
+      <div class="form-row">
+        <div class="field">
+          <label for="query">Query</label>
+          <input id="query" name="query" type="text" placeholder="What are you looking for?" required autocomplete="off">
+        </div>
+        <div class="field">
+          <label for="library_id">Library</label>
+          <input id="library_id" name="library_id" type="text" value="main" required pattern="^[a-z][a-z0-9_]*$" title="Lowercase letters, digits, underscores only">
+        </div>
+        <div class="field">
+          <label for="chunk_type">Chunk Type</label>
+          <select id="chunk_type" name="chunk_type">
+            {% for ct in chunk_types %}
+            <option value="{{ ct }}" {% if ct == 'body' %}selected{% endif %}>{{ ct }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="field">
+          <label for="k">Results</label>
+          <input id="k" name="k" type="number" value="10" min="1" max="100">
+        </div>
+        <button type="submit">Search</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="jobs-section">
+    <h2>Search Jobs</h2>
+    <div class="jobs-table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Query</th>
+            <th>Library</th>
+            <th>Type</th>
+            <th>K</th>
+            <th>Status</th>
+            <th>Submitted</th>
+            <th>Results</th>
+          </tr>
+        </thead>
+        <tbody id="jobs-body">
+          <tr class="empty-state-row">
+            <td colspan="7" class="empty-state">No searches yet — submit a query above</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</main>
+
+<script>
+  document.body.addEventListener("htmx:afterSwap", function (e) {
+    const emptyRow = document.querySelector(".empty-state-row");
+    if (emptyRow && document.querySelectorAll("#jobs-body tr").length > 1) {
+      emptyRow.remove();
+    }
+  });
+</script>
+
+</body>
+</html>

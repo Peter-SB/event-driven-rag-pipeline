@@ -1,0 +1,25 @@
+<tr id="job-{{ job_id }}"
+  {% if status not in ['complete', 'failed'] %}
+  hx-get="/ui/search/{{ job_id }}/status"
+  hx-trigger="load delay:2000ms"
+  hx-target="this"
+  hx-swap="outerHTML"
+  {% endif %}
+  {% if status == 'complete' %}
+  onclick="location.href='/ui/search/{{ job_id }}'"
+  class="job-row clickable"
+  title="Click to view results"
+  {% else %}
+  class="job-row"
+  {% endif %}
+>
+  <td class="query-cell">{{ query }}</td>
+  <td>{{ library_id }}</td>
+  <td>{{ chunk_type }}</td>
+  <td>{{ k }}</td>
+  <td><span class="badge badge-{{ status }}">{{ status }}</span></td>
+  <td>{{ created_at }}</td>
+  <td class="results-count">
+    {% if result_count is not none %}{{ result_count }}{% else %}—{% endif %}
+  </td>
+</tr>
