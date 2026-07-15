@@ -183,6 +183,12 @@ services:
       OTEL_ENABLED: "${OTEL_ENABLED:-false}"
       OTEL_SERVICE_NAME: "rag-gpu-worker"
       OTEL_EXPORTER_OTLP_ENDPOINT: "${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}"
+      # Optional: OpenAI-compatible remote embedding endpoint (e.g. LM Studio on
+      # a homelab GPU machine). Unset to disable — falls back to local model only.
+      EMBED_REMOTE_URL: "${EMBED_REMOTE_URL:-}"
+      EMBED_REMOTE_API_KEY: "${EMBED_REMOTE_API_KEY:-}"
+      EMBED_REMOTE_TIMEOUT_S: "${EMBED_REMOTE_TIMEOUT_S:-10.0}"
+      EMBED_REMOTE_HEALTH_INTERVAL_S: "${EMBED_REMOTE_HEALTH_INTERVAL_S:-30.0}"
     volumes:
       - hf_model_cache:/root/.cache/huggingface
     networks:

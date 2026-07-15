@@ -268,6 +268,10 @@ def _on_message_callback(self, ch, method, properties, body):
 | `REDPANDA_SERVERS` | — | EventBus | Comma-separated broker list (optional, for Redpanda) |
 | `EVENT_BUS` | `postgres` | All | `postgres` or `redpanda` |
 | `MOCK_EMBEDDINGS` | (unset) | GPU worker | If set, use deterministic mock model (for dev/CI) |
+| `EMBED_REMOTE_URL` | (unset) | GPU worker | OpenAI-compatible base URL (e.g. LM Studio) to try before the local model; unset disables remote embedding |
+| `EMBED_REMOTE_API_KEY` | (unset) | GPU worker | Optional bearer token sent to the remote endpoint |
+| `EMBED_REMOTE_TIMEOUT_S` | `10.0` | GPU worker | Per-request timeout for the remote endpoint |
+| `EMBED_REMOTE_HEALTH_INTERVAL_S` | `30.0` | GPU worker | Background health-check poll interval; a failed live request also demotes status immediately |
 
 ---
 

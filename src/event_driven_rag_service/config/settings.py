@@ -59,5 +59,24 @@ class Settings:
         default_factory=lambda: os.getenv("OTEL_SPAN_PROCESSOR", "simple")
     )
 
+    # --- Remote embedding endpoint (optional) ---
+    # OpenAI-compatible base URL (e.g. LM Studio on a homelab GPU machine),
+    # e.g. "http://192.168.1.50:1234/v1". Unset/empty disables remote embedding
+    # entirely — the GPU worker falls straight back to its local model.
+    embed_remote_url: str = field(default_factory=lambda: os.getenv("EMBED_REMOTE_URL", ""))
+    embed_remote_api_key: str = field(
+        default_factory=lambda: os.getenv("EMBED_REMOTE_API_KEY", "")
+    )
+    embed_remote_timeout_s: float = field(
+        default_factory=lambda: float(os.getenv("EMBED_REMOTE_TIMEOUT_S", "10.0"))
+    )
+    embed_remote_health_interval_s: float = field(
+        default_factory=lambda: float(os.getenv("EMBED_REMOTE_HEALTH_INTERVAL_S", "30.0"))
+    )
+    # Relative to embed_remote_url; OpenAI-compatible model-list endpoint, cheap to poll.
+    embed_remote_health_path: str = field(
+        default_factory=lambda: os.getenv("EMBED_REMOTE_HEALTH_PATH", "/models")
+    )
+
 
 settings = Settings()

@@ -27,6 +27,7 @@ from event_driven_rag_service.infrastructure.metrics import record_model_load_ti
 from event_driven_rag_service.repository.chunk_repository import ChunkRepository
 from event_driven_rag_service.repository.search_job_repository import SearchJobRepository
 from event_driven_rag_service.worker.gpu_worker import GpuEmbedWorker
+from event_driven_rag_service.worker.remote_embedding import build_fallback_model
 from event_driven_rag_service.handlers.embed_handler import EmbedHandler
 
 # Replace logging.basicConfig() — routes all stdlib logging.getLogger() calls through structlog.
@@ -41,6 +42,28 @@ logger = logging.getLogger(__name__)
 
 def _load_model(model_name: str) -> Any:
     """Load an embedding model by name (blocking — runs in the main thread).
+
+    If EMBED_REMOTE_URL is configured, the returned model tries that endpoint
+    first and falls back to the local model (below) when it's unreachable.
+    """
+    local = _load_local_model(model_name)
+    if settings.embed_remote_url:
+        cfg = next((c for c in EMBED_CONFIGS.values() if c.model == model_name), None)
+        remote_model_name = (cfg.remote_model if cfg and cfg.remote_model else model_name)
+        return build_fallback_model(
+            local=local,
+            remote_model_name=remote_model_name,
+            base_url=settings.embed_remote_url,
+            api_key=settings.embed_remote_api_key,
+            timeout_s=settings.embed_remote_timeout_s,
+            health_path=settings.embed_remote_health_path,
+            health_interval_s=settings.embed_remote_health_interval_s,
+        )
+    return local
+
+
+def _load_local_model(model_name: str) -> Any:
+    """Load a local embedding model by name (blocking — runs in the main thread).
 
     Set MOCK_EMBEDDINGS=1 for local development without a GPU.
     """
