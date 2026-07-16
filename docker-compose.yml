@@ -65,49 +65,49 @@ services:
       start_period: 15s  # Give RabbitMQ 15s to start before first healthcheck
 
   # ─── Redpanda (Kafka-compatible, single-node homelab) ────────────────────
-  redpanda:
-    image: redpandadata/redpanda:latest
-    container_name: rag-redpanda
-    restart: unless-stopped
-    command:
-      - redpanda start
-      - --smp 1
-      - --reserve-memory 0M
-      - --overprovisioned
-      - --node-id 0
-      - --kafka-addr PLAINTEXT://0.0.0.0:29092,OUTSIDE://0.0.0.0:9092
-      - --advertise-kafka-addr PLAINTEXT://redpanda:29092,OUTSIDE://localhost:9092
-      - --pandaproxy-addr 0.0.0.0:8082
-      - --advertise-pandaproxy-addr localhost:8082
-    ports:
-      - "9092:9092"       # External (host ↔ container) Kafka API
-      - "29092:29092"     # Internal (container ↔ container) Kafka API
-      - "8082:8082"       # Pandaproxy REST
-      - "9644:9644"       # Admin API
-    volumes:
-      - redpanda_data:/var/lib/redpanda/data
-    networks:
-      - rag
-    healthcheck:
-      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy: true'"]
-      interval: 10s
-      timeout: 10s
-      retries: 10
+  # redpanda:
+  #   image: redpandadata/redpanda:latest
+  #   container_name: rag-redpanda
+  #   restart: unless-stopped
+  #   command:
+  #     - redpanda start
+  #     - --smp 1
+  #     - --reserve-memory 0M
+  #     - --overprovisioned
+  #     - --node-id 0
+  #     - --kafka-addr PLAINTEXT://0.0.0.0:29092,OUTSIDE://0.0.0.0:9092
+  #     - --advertise-kafka-addr PLAINTEXT://redpanda:29092,OUTSIDE://localhost:9092
+  #     - --pandaproxy-addr 0.0.0.0:8082
+  #     - --advertise-pandaproxy-addr localhost:8082
+  #   ports:
+  #     - "9092:9092"       # External (host ↔ container) Kafka API
+  #     - "29092:29092"     # Internal (container ↔ container) Kafka API
+  #     - "8082:8082"       # Pandaproxy REST
+  #     - "9644:9644"       # Admin API
+  #   volumes:
+  #     - redpanda_data:/var/lib/redpanda/data
+  #   networks:
+  #     - rag
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy: true'"]
+  #     interval: 10s
+  #     timeout: 10s
+  #     retries: 10
 
-  # ─── Redpanda Console ────────────────────────────────────────────────────
-  redpanda-console:
-    image: redpandadata/console:latest
-    container_name: rag-redpanda-console
-    restart: unless-stopped
-    environment:
-      KAFKA_BROKERS: "redpanda:29092"
-    ports:
-      - "8080:8080"
-    networks:
-      - rag
-    depends_on:
-      redpanda:
-        condition: service_healthy
+  # # ─── Redpanda Console ────────────────────────────────────────────────────
+  # redpanda-console:
+  #   image: redpandadata/console:latest
+  #   container_name: rag-redpanda-console
+  #   restart: unless-stopped
+  #   environment:
+  #     KAFKA_BROKERS: "redpanda:29092"
+  #   ports:
+  #     - "8080:8080"
+  #   networks:
+  #     - rag
+  #   depends_on:
+  #     redpanda:
+  #       condition: service_healthy
 
   # ─── API (FastAPI) ────────────────────────────────────────────────────────
   api:
