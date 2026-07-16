@@ -10,7 +10,10 @@ Dispatchers — look up where to publish a task:
     exchange = await channel.get_exchange(route.exchange)
     await exchange.publish(
         aio_pika.Message(task.model_dump_json().encode()),
-        routing_key=route.resolve_key(task),
+        # Static routing key for single-destination routes:
+        routing_key=route.routing_key,
+        # Config-dependent routes (embed, infer) instead resolve the key
+        # from the relevant config object, e.g. EMBED_CONFIGS[task_type].queue.
     )
 
 Workers — deserialize an incoming payload to the correct typed model:
@@ -34,7 +37,6 @@ from typing import Annotated, Union
 
 from pydantic import Field, TypeAdapter
 
-from .base_task import BaseTask
 from .chunk_task import ChunkTask
 from .embed_task import EmbedTask
 from .infer_task import InferTask
@@ -47,30 +49,29 @@ from .search_tasks import SearchRankTask, SearchRunTask
 
 @dataclass(frozen=True)
 class TaskRoute:
-    """Exchange and routing-key config for publishing one task kind.
+    """Exchange (and, for fixed-destination routes, routing key) for one task kind.
 
-    ``routing_key`` may contain Python format placeholders that are
-    interpolated from the task's own fields, e.g. ``"gpu.embed.{model_name}"``.
+    ``routing_key`` is a static value for routes with one destination queue
+    (chunk, search_run, search_rank). It's left unset for routes where the
+    destination queue depends on task-specific config (embed, infer) — those
+    dispatchers must resolve the actual key from the relevant config object's
+    ``.queue`` field (e.g. ``EMBED_CONFIGS[task_type].queue``) at publish
+    time. Deriving a routing key from a model *name* instead of that config's
+    ``.queue`` is a known footgun: multiple task_types can share one physical
+    queue under different model strings (see chunk_dispatcher.py), so a
+    name-derived key silently targets a queue nothing is bound to and
+    RabbitMQ drops the message with no error.
     """
     exchange: str
-    routing_key: str
-
-    def resolve_key(self, task: BaseTask) -> str:
-        """Substitute task fields into the routing key template."""
-        data = task.model_dump()
-        # Strip HuggingFace org prefix so "BAAI/bge-base-en-v1.5" routes to
-        # "gpu.embed.bge-base-en-v1.5", not "gpu.embed.BAAI/bge-base-en-v1.5".
-        if "model_name" in data and isinstance(data["model_name"], str):
-            data["model_name"] = data["model_name"].split("/")[-1].lower()
-        return self.routing_key.format_map(data)
+    routing_key: str | None = None
 
 
 #: Maps each ``kind`` value to its publish destination.
 #: Dispatchers use this instead of hard-coding exchange/routing-key strings.
 TASK_ROUTES: dict[str, TaskRoute] = {
     "chunk":       TaskRoute(exchange="ingestion", routing_key="cpu.chunk.post"),
-    "embed":       TaskRoute(exchange="embedding", routing_key="gpu.embed.{model_name}"),
-    "infer":       TaskRoute(exchange="inference", routing_key="gpu.infer_local.{model}"),
+    "embed":       TaskRoute(exchange="embedding"),
+    "infer":       TaskRoute(exchange="inference"),
     "search_run":  TaskRoute(exchange="search",    routing_key="cpu.search.run"),
     "search_rank": TaskRoute(exchange="search",    routing_key="cpu.search.rank"),
 }

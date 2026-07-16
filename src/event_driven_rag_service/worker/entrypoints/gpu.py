@@ -24,6 +24,7 @@ from event_driven_rag_service.infrastructure.observability import setup_observab
 from event_driven_rag_service.config.embedding_config import EMBED_CONFIGS
 from event_driven_rag_service.infrastructure.event_bus import create_event_bus, PostgresEventBus
 from event_driven_rag_service.infrastructure.metrics import record_model_load_time
+from event_driven_rag_service.infrastructure.task_queue import verify_embedding_topology
 from event_driven_rag_service.repository.chunk_repository import ChunkRepository
 from event_driven_rag_service.repository.search_job_repository import SearchJobRepository
 from event_driven_rag_service.worker.gpu_worker import GpuEmbedWorker
@@ -58,6 +59,7 @@ def _load_model(model_name: str) -> Any:
             timeout_s=settings.embed_remote_timeout_s,
             health_path=settings.embed_remote_health_path,
             health_interval_s=settings.embed_remote_health_interval_s,
+            load_timeout_s=settings.embed_remote_load_timeout_s,
         )
     return local
 
@@ -188,6 +190,10 @@ async def _setup():
 
 def main() -> None:
     logger.info("GpuEmbedWorker starting")
+
+    # Crash immediately on a config/topology mismatch rather than silently
+    # dropping embed tasks at runtime (see task_queue.verify_embedding_topology).
+    verify_embedding_topology()
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)

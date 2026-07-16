@@ -54,35 +54,53 @@ conventions used across code, events, tasks, and infrastructure.
 
 ## Task Queue Exchanges & Routing (RabbitMQ)
 
+> Source of truth: `infrastructure/task_queue.py` (BINDINGS) / `config/embedding_config.py`
+> (EMBED_CONFIGS) — verify against those before trusting this table, it's a hand-maintained
+> mirror with no automated check tying it to the code.
+
+Note `embedding` is a **topic** exchange, not direct: multiple task_types can route to the
+same queue under different model strings (see `summary_title`/`analysis` below sharing
+`gpu.embed.qwen3-0.6b`), which only topic routing supports. The routing key published is
+always `EMBED_CONFIGS[task_type].queue` — never derived from the model name (see
+`tasks/registry.py` docstring for why that footgun was removed).
+
 | Exchange | Type | Routing key | Queue | Consumer |
 |---|---|---|---|---|
-| `ingestion` | direct | `cpu.chunk.post` | `cpu.chunk.post` | CpuChunkWorker |
-| `embedding` | direct | `gpu.embed.{model}` | `gpu.embed.bge-base-v1.5` etc. | GpuEmbedWorker |
-| `dlx` | fanout | — | `dlq.*` | (manual review) |
+| `ingestion` | topic | `cpu.chunk.post` | `cpu.chunk.post` | CpuChunkWorker |
+| `embedding` | topic | `EMBED_CONFIGS[task_type].queue` | `gpu.embed.bge-base-en-v1.5`, `gpu.embed.bge-small-en-v1.5`, `gpu.embed.qwen3-0.6b` | GpuEmbedWorker |
+| `dlx` | direct | `dlq.{queue}` | `dlq.*` | (manual review) |
 
 ---
 
 ## Chunk Tables
 
-Each `(field, model)` pair gets its own table: `chunks_{field}_{model_sanitised}`.
-Hyphens in the model name are replaced with underscores.
+Each `(post_table, task_type, model)` triple gets its own table, built by
+`utils/build_table_names.build_chunk_table_name()`:
+`{post_table}_chunks_{task_type}_{model_sanitised}`. Never hardcode this — always call the
+builder, and never hand-maintain a literal example elsewhere (Grafana dashboards learned
+this the hard way once already).
 
-| task_type | model | table |
+| task_type | model | example table (`post_table="posts_main"`) |
 |---|---|---|
-| `body` | `bge-base-v1.5` | `chunks_body_bge_base_v1_5` |
-| `summary_title` | `bge-base-v1.5` | `chunks_summary_title_bge_base_v1_5` |
-| `analysis` | `qwen3-0.6b` | `chunks_analysis_qwen3_0_6b` |
+| `body` | `BAAI/bge-base-en-v1.5` | `posts_main_chunks_body_baai_bge_base_en_v1_5` |
+| `title` | `BAAI/bge-small-en-v1.5` | `posts_main_chunks_title_baai_bge_small_en_v1_5` |
+| `summary_title` | `Qwen3-Embedding-0.6B-Q8_0.gguf` | `posts_main_chunks_summary_title_qwen3_embedding_0_6b_q8_0_gguf` |
+| `analysis` | `Qwen/Qwen3-0.6B` | `posts_main_chunks_analysis_qwen_qwen3_0_6b` |
 
 ---
 
 ## Embed Configs (`config/embedding_config.py`)
 
+`summary_title` and `analysis` intentionally share one GPU queue
+(`gpu.embed.qwen3-0.6b`) under two different model strings — the queue is a physical
+worker/model-load unit, not a 1:1 mirror of `model`.
+
 | task_type | model | vector dim | queue |
 |---|---|---|---|
-| `body` | `bge-base-v1.5` | 768 | `gpu.embed.bge-base-v1.5` |
-| `summary_title` | `bge-base-v1.5` | 768 | `gpu.embed.bge-base-v1.5` |
-| `analysis` | `qwen3-0.6b` | 1024 | `gpu.embed.qwen3-0.6b` |
-| `query` | `bge-base-v1.5` | 768 | `gpu.embed.bge-base-v1.5` |
+| `body` | `BAAI/bge-base-en-v1.5` | 768 | `gpu.embed.bge-base-en-v1.5` |
+| `title` | `BAAI/bge-small-en-v1.5` | 384 | `gpu.embed.bge-small-en-v1.5` |
+| `summary_title` | `Qwen3-Embedding-0.6B-Q8_0.gguf` | 1024 | `gpu.embed.qwen3-0.6b` |
+| `analysis` | `Qwen/Qwen3-0.6B` | 1024 | `gpu.embed.qwen3-0.6b` |
 
 ---
 

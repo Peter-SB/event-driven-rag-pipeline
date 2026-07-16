@@ -26,6 +26,20 @@ The two layers are kept deliberately separate:
 
 
 
+# Local Dev Setup
+
+Install the package **editable**, so `src/` changes take effect immediately without reinstalling:
+
+```
+pip install -e ".[dev]"
+```
+
+A non-editable install (`pip install .`) copies the package into `site-packages` at install
+time — local edits to `src/` then silently stop taking effect for anything that imports the
+package, including `pytest`, which can leave the whole test suite passing green against dead
+code. `tests/unit/test_dev_environment.py` guards against this by asserting the package resolves
+back to `src/`; if it ever fails, re-run the command above.
+
 # Event Driven Task Loop
 
 **Event driven architecture at its heart is the decoupling from direct cause and event to a system of ledging events and letting 'anyone' whos interested react to those events they care about. This is a powerful pattern for building distributed systems as it allows for much better modularity, scalability, and resilience.**

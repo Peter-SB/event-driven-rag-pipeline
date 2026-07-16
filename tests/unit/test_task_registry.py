@@ -6,7 +6,8 @@ the parse_task() discriminated-union deserialiser used by workers.
 Tested behaviours
 -----------------
 - ChunkTask.chunk_table_name() produces expected table name format
-- EmbedTask routing key is interpolated from model_name
+- TASK_ROUTES["embed"] has no static routing_key (must be resolved from
+  EMBED_CONFIGS[...].queue by the dispatcher, not derived from model_name)
 - parse_task() returns correct concrete type based on ``kind`` field
 - parse_task() raises ValidationError for unknown or missing kind
 - BaseTask auto-generates a unique task_id per instance
@@ -64,11 +65,10 @@ def test_embed_task_kind_is_always_embed():
     assert task.kind == "embed"
 
 
-def test_embed_task_routing_key_interpolates_model_name():
-    task = EmbedTask(task_type="chunk", model_name="BAAI/bge-base-en-v1.5", chunk_ids=["x"])
-    route = TASK_ROUTES["embed"]
-    key = route.resolve_key(task)
-    assert key == "gpu.embed.bge-base-en-v1.5"
+def test_embed_route_has_no_static_routing_key():
+    """The embed route's queue depends on task_type (EMBED_CONFIGS[...].queue),
+    not on a model-name-derived template — see ChunkDispatcher/SearchDispatcher."""
+    assert TASK_ROUTES["embed"].routing_key is None
 
 
 # ---------------------------------------------------------------------------

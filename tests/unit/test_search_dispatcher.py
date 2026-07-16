@@ -11,6 +11,7 @@ import uuid
 
 import pytest
 
+from event_driven_rag_service.config.embedding_config import EMBED_CONFIGS
 from event_driven_rag_service.dispatchers.search_dispatcher import SearchDispatcher
 from event_driven_rag_service.tasks.embed_task import EmbedTask
 from event_driven_rag_service.events.search_events import SearchJobCreatedEvent
@@ -55,7 +56,7 @@ async def test_search_dispatcher_publishes_embed_task_for_query():
         "query_job_id": job_id,
         "query": query_text,
         "trace_id": trace_id,
-        "embedding_profile": "BAAI/bge-base-en-v1.5",
+        "embedding_profile": EMBED_CONFIGS["body"].model,
     }
 
     mock_bus = MagicMock()
@@ -83,8 +84,10 @@ async def test_search_dispatcher_publishes_embed_task_for_query():
     message = call_args[0][0]  # First positional arg
     routing_key = call_args[1]["routing_key"]  # Named arg
 
-    # Verify routing key
-    assert routing_key == "gpu.embed.bge-base-en-v1.5", f"Expected routing_key 'gpu.embed.bge-base-en-v1.5', got {routing_key!r}"
+    # Verify routing key — must be the config's bound queue, not a literal
+    # string, so this test doesn't silently pass after a model rename.
+    expected_queue = EMBED_CONFIGS["body"].queue
+    assert routing_key == expected_queue, f"Expected routing_key {expected_queue!r}, got {routing_key!r}"
 
     # Decode and validate EmbedTask
     task_dict = json.loads(message.body.decode())
@@ -93,7 +96,7 @@ async def test_search_dispatcher_publishes_embed_task_for_query():
     assert task.task_type == "query", f"Expected task_type 'query', got {task.task_type!r}"
     assert task.query == query_text, f"Expected query {query_text!r}, got {task.query!r}"
     assert task.query_job_id == job_id, f"Expected query_job_id {job_id!r}, got {task.query_job_id!r}"
-    assert task.model_name == "BAAI/bge-base-en-v1.5", f"Expected model_name 'bge-base-v1.5', got {task.model_name!r}"
+    assert task.model_name == EMBED_CONFIGS["body"].model, f"Expected model_name {EMBED_CONFIGS['body'].model!r}, got {task.model_name!r}"
     assert task.trace_id == trace_id, f"Expected trace_id {trace_id!r}, got {task.trace_id!r}"
 
 
@@ -114,7 +117,7 @@ async def test_search_dispatcher_handles_missing_trace_id():
         "event_type": "search_job.created",
         "query_job_id": job_id,
         "query": "test query",
-        "embedding_profile": "BAAI/bge-base-en-v1.5",
+        "embedding_profile": EMBED_CONFIGS["body"].model,
     }
 
     mock_bus = MagicMock()
@@ -198,12 +201,12 @@ async def test_search_dispatcher_routes_title_model_to_small_queue():
         "event_type": "search_job.created",
         "query_job_id": str(uuid.uuid4()),
         "query": "title search query",
-        "embedding_profile": "BAAI/bge-small-en-v1.5",
+        "embedding_profile": EMBED_CONFIGS["title"].model,
     }
     routing_key, task_dict = await _run_dispatcher_with_event(event)
 
-    assert routing_key == "gpu.embed.bge-small-en-v1.5", routing_key
-    assert task_dict["model_name"] == "BAAI/bge-small-en-v1.5"
+    assert routing_key == EMBED_CONFIGS["title"].queue, routing_key
+    assert task_dict["model_name"] == EMBED_CONFIGS["title"].model
 
 
 @pytest.mark.asyncio
@@ -213,12 +216,12 @@ async def test_search_dispatcher_routes_body_model_to_base_queue():
         "event_type": "search_job.created",
         "query_job_id": str(uuid.uuid4()),
         "query": "body search query",
-        "embedding_profile": "BAAI/bge-base-en-v1.5",
+        "embedding_profile": EMBED_CONFIGS["body"].model,
     }
     routing_key, task_dict = await _run_dispatcher_with_event(event)
 
-    assert routing_key == "gpu.embed.bge-base-en-v1.5", routing_key
-    assert task_dict["model_name"] == "BAAI/bge-base-en-v1.5"
+    assert routing_key == EMBED_CONFIGS["body"].queue, routing_key
+    assert task_dict["model_name"] == EMBED_CONFIGS["body"].model
 
 
 @pytest.mark.asyncio

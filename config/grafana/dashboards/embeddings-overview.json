@@ -1031,6 +1031,220 @@
                 },
                 "overrides": []
             }
+        },
+        {
+            "id": 19,
+            "type": "row",
+            "title": "Analysis",
+            "collapsed": false,
+            "gridPos": {
+                "h": 1,
+                "w": 24,
+                "x": 0,
+                "y": 24
+            }
+        },
+        {
+            "id": 20,
+            "title": "Analysis Chunks",
+            "description": "Chunks from the analysis pipeline (model: Qwen/Qwen3-0.6B — shares the gpu.embed.qwen3-0.6b queue with summary_title under a different model string). Shows 'No data' until the first analysis chunk is processed.",
+            "type": "stat",
+            "datasource": {
+                "type": "postgres",
+                "uid": "postgres-ds"
+            },
+            "gridPos": {
+                "h": 5,
+                "w": 8,
+                "x": 0,
+                "y": 25
+            },
+            "targets": [
+                {
+                    "datasource": {
+                        "type": "postgres",
+                        "uid": "postgres-ds"
+                    },
+                    "rawQuery": true,
+                    "rawSql": "SELECT COUNT(*) AS \"Analysis Chunks\" FROM posts_${library_id}_chunks_analysis_qwen_qwen3_0_6b",
+                    "format": "table",
+                    "refId": "A"
+                }
+            ],
+            "options": {
+                "reduceOptions": {
+                    "values": false,
+                    "calcs": [
+                        "lastNotNull"
+                    ],
+                    "fields": ""
+                },
+                "orientation": "auto",
+                "textMode": "auto",
+                "colorMode": "background",
+                "graphMode": "none",
+                "justifyMode": "center",
+                "wideLayout": true,
+                "showPercentChange": false
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "color": {
+                        "fixedColor": "orange",
+                        "mode": "fixed"
+                    },
+                    "unit": "short",
+                    "mappings": [],
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {
+                                "color": "orange",
+                                "value": null
+                            }
+                        ]
+                    }
+                },
+                "overrides": []
+            }
+        },
+        {
+            "id": 21,
+            "title": "Analysis Embedded",
+            "description": "Analysis chunks with a computed embedding vector (embedding IS NOT NULL). Shows 'No data' until the table exists.",
+            "type": "stat",
+            "datasource": {
+                "type": "postgres",
+                "uid": "postgres-ds"
+            },
+            "gridPos": {
+                "h": 5,
+                "w": 8,
+                "x": 8,
+                "y": 25
+            },
+            "targets": [
+                {
+                    "datasource": {
+                        "type": "postgres",
+                        "uid": "postgres-ds"
+                    },
+                    "rawQuery": true,
+                    "rawSql": "SELECT COUNT(*) AS \"Analysis Embedded\" FROM posts_${library_id}_chunks_analysis_qwen_qwen3_0_6b WHERE embedding IS NOT NULL",
+                    "format": "table",
+                    "refId": "A"
+                }
+            ],
+            "options": {
+                "reduceOptions": {
+                    "values": false,
+                    "calcs": [
+                        "lastNotNull"
+                    ],
+                    "fields": ""
+                },
+                "orientation": "auto",
+                "textMode": "auto",
+                "colorMode": "background",
+                "graphMode": "none",
+                "justifyMode": "center",
+                "wideLayout": true,
+                "showPercentChange": false
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "color": {
+                        "fixedColor": "dark-orange",
+                        "mode": "fixed"
+                    },
+                    "unit": "short",
+                    "mappings": [],
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {
+                                "color": "dark-orange",
+                                "value": null
+                            }
+                        ]
+                    }
+                },
+                "overrides": []
+            }
+        },
+        {
+            "id": 22,
+            "title": "Analysis % Embedded",
+            "description": "Percentage of analysis chunks that have a stored embedding. Shows 'No data' until the table exists.",
+            "type": "stat",
+            "datasource": {
+                "type": "postgres",
+                "uid": "postgres-ds"
+            },
+            "gridPos": {
+                "h": 5,
+                "w": 8,
+                "x": 16,
+                "y": 25
+            },
+            "targets": [
+                {
+                    "datasource": {
+                        "type": "postgres",
+                        "uid": "postgres-ds"
+                    },
+                    "rawQuery": true,
+                    "rawSql": "SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE ROUND(COUNT(*) FILTER (WHERE embedding IS NOT NULL) * 100.0 / COUNT(*), 1) END AS \"Analysis % Embedded\"\nFROM posts_${library_id}_chunks_analysis_qwen_qwen3_0_6b",
+                    "format": "table",
+                    "refId": "A"
+                }
+            ],
+            "options": {
+                "reduceOptions": {
+                    "values": false,
+                    "calcs": [
+                        "lastNotNull"
+                    ],
+                    "fields": ""
+                },
+                "orientation": "auto",
+                "textMode": "auto",
+                "colorMode": "background",
+                "graphMode": "none",
+                "justifyMode": "center",
+                "wideLayout": true,
+                "showPercentChange": false
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "color": {
+                        "mode": "thresholds"
+                    },
+                    "unit": "percent",
+                    "decimals": 1,
+                    "min": 0,
+                    "max": 100,
+                    "mappings": [],
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {
+                                "color": "red",
+                                "value": null
+                            },
+                            {
+                                "color": "yellow",
+                                "value": 50
+                            },
+                            {
+                                "color": "green",
+                                "value": 95
+                            }
+                        ]
+                    }
+                },
+                "overrides": []
+            }
         }
     ]
 }

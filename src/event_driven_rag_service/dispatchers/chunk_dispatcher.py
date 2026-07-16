@@ -60,7 +60,7 @@ class ChunkDispatcher:
         ):
             try:
                 _record_queue_lag(event, "embed")
-                await self._dispatch_embedding(exchange, route, event)
+                await self._dispatch_embedding(exchange, event)
             except Exception:
                 logger.exception(
                     "ChunkDispatcher: failed to dispatch embed task for post_id=%s",
@@ -70,7 +70,6 @@ class ChunkDispatcher:
     async def _dispatch_embedding(
         self,
         exchange: aio_pika.abc.AbstractExchange,
-        route,
         event: dict,
     ) -> None:
         parent_ctx = extract_trace_context(
@@ -100,7 +99,10 @@ class ChunkDispatcher:
                 parent_span_id=parent_span_id,
             )
 
-            routing_key = route.resolve_key(task)
+            # Route by the config's queue, not a model-name-derived key: multiple
+            # task_types (e.g. summary_title, analysis) can share one GPU queue
+            # under different model strings, which a name-derived key can't express.
+            routing_key = embed_cfg.queue
             await exchange.publish(
                 aio_pika.Message(task.model_dump_json().encode()),
                 routing_key=routing_key,

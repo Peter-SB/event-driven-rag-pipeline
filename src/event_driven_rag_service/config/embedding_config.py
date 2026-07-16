@@ -27,14 +27,17 @@ CHUNK_CONFIG = ChunkConfig(
 
 # Keyed by chunk type — determines which model embeds each chunk type.
 # Search queries use the config for the chunk type being searched (no separate query entry).
+
+qwen3_embed_cfg = EmbedConfig(
+    model="Qwen3-Embedding-0.6B-Q8_0.gguf",
+    queue="gpu.embed.qwen3-0.6b",
+    dim=1024,
+    remote_model="text-embedding-qwen3-embedding-0.6b",  # LM Studio's id for this model
+)
+
 EMBED_CONFIGS: dict[str, EmbedConfig] = {
     "body":          EmbedConfig(model="BAAI/bge-base-en-v1.5",     queue="gpu.embed.bge-base-en-v1.5",     dim=768),
     "title":         EmbedConfig(model="BAAI/bge-small-en-v1.5",    queue="gpu.embed.bge-small-en-v1.5",    dim=384),
-    "summary_title": EmbedConfig(
-        model="Qwen3-Embedding-0.6B-Q8_0.gguf",
-        queue="gpu.embed.qwen3-0.6b",
-        dim=1024,
-        remote_model="text-embedding-qwen3-embedding-0.6b",  # LM Studio's id for this model
-    ),
-    "analysis":      EmbedConfig(model="Qwen/Qwen3-0.6B",           queue="gpu.embed.qwen3-0.6b",           dim=1024),
+    "summary_title": qwen3_embed_cfg,
+    "analysis":      qwen3_embed_cfg,
 }

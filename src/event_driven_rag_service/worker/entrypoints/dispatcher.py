@@ -27,6 +27,7 @@ from event_driven_rag_service.dispatchers.chunk_dispatcher import ChunkDispatche
 from event_driven_rag_service.dispatchers.search_dispatcher import SearchDispatcher
 from event_driven_rag_service.dispatchers.embedding_dispatcher import EmbeddingDispatcher
 from event_driven_rag_service.infrastructure.event_bus import create_event_bus
+from event_driven_rag_service.infrastructure.task_queue import verify_embedding_topology
 
 # Replace logging.basicConfig() — routes all stdlib logging.getLogger() calls through structlog.
 setup_observability("rag-dispatcher")
@@ -58,6 +59,10 @@ async def _setup():
 async def main() -> None:
     """Main loop for running dispatchers concurrently. Must update if adding new dispatchers."""
     logger.info("Dispatcher services starting")
+
+    # Crash immediately on a config/topology mismatch rather than silently
+    # dropping embed tasks at runtime (see task_queue.verify_embedding_topology).
+    verify_embedding_topology()
 
     pool, event_bus, rmq = await _setup()
 

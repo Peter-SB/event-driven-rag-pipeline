@@ -4,6 +4,8 @@ import aio_pika
 from aio_pika import ExchangeType
 from aiormq.exceptions import ChannelPreconditionFailed
 
+from event_driven_rag_service.config.embedding_config import EMBED_CONFIGS
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -64,6 +66,36 @@ _WORK_QUEUES: list[str] = [q for bindings in BINDINGS.values() for _, q in bindi
 DLQ_QUEUES:   list[str] = [f"dlq.{q}" for q in _WORK_QUEUES]
 
 
+def verify_embedding_topology() -> None:
+    """Fail loudly if EMBED_CONFIGS and BINDINGS['embedding'] have drifted apart.
+
+    ChunkDispatcher and SearchDispatcher publish embed tasks using
+    ``EMBED_CONFIGS[task_type].queue`` as the routing key. If that queue isn't
+    declared here, the message is silently dropped by RabbitMQ's topic
+    exchange — no exception, no DLQ entry, just missing embeddings. Run this
+    at process startup (not just in tests) so a deploy with mismatched config
+    crashes immediately instead of failing silently in production.
+    """
+    declared = {queue for _, queue in BINDINGS["embedding"]}
+    configured = {cfg.queue for cfg in EMBED_CONFIGS.values()}
+
+    missing = configured - declared
+    if missing:
+        raise RuntimeError(
+            f"EMBED_CONFIGS references queues not declared in BINDINGS['embedding']: "
+            f"{sorted(missing)}. Embed tasks routed to these queues would be silently "
+            f"dropped. Add them to task_queue.BINDINGS['embedding']."
+        )
+
+    orphaned = declared - configured
+    if orphaned:
+        logger.warning(
+            "BINDINGS['embedding'] declares queues not referenced by any EMBED_CONFIGS "
+            "entry (dead queues, safe to remove if intentional): %s",
+            sorted(orphaned),
+        )
+
+
 async def setup_topology(connection: aio_pika.abc.AbstractRobustConnection) -> None:
     """Declare all exchanges, work queues, DLQs, and bindings in dependency order.
 
@@ -74,6 +106,7 @@ async def setup_topology(connection: aio_pika.abc.AbstractRobustConnection) -> N
     work queue lets us catch that error, delete the stale queue, and redeclare it
     correctly — without aborting the whole topology setup.
     """
+    verify_embedding_topology()
 
     # 1. Declare all exchanges and DLQs on a shared channel.
     #    Neither exchanges nor DLQs carry args that change over time, so
