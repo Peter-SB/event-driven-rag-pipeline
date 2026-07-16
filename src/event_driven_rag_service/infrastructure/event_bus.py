@@ -98,8 +98,18 @@ class PostgresEventBus(EventBusBase):
         self._pool = pool
 
     async def setup_tables(self) -> None:
-        """Idempotently create event_log and consumer_offsets tables."""
-        async with self._pool.acquire() as conn:
+        """Idempotently create event_log and consumer_offsets tables.
+
+        Multiple services (dispatcher, gpu worker, ...) call this concurrently
+        at startup. Postgres's ``CREATE TABLE IF NOT EXISTS`` check-then-create
+        is not atomic across sessions, so without serializing via an advisory
+        lock, two concurrent callers can both attempt the insert and one loses
+        with a UniqueViolationError on pg_class. The lock and DDL must share a
+        transaction — ``pg_advisory_xact_lock`` releases at transaction end,
+        and each bare ``conn.execute()`` call is its own implicit transaction.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext('setup_event_log_tables'))")
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS event_log (
                     id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
