@@ -31,10 +31,12 @@ setup_observability("rag-api")
 from event_driven_rag_service.infrastructure.task_queue import setup_topology
 from event_driven_rag_service.repository.post_repository import PostRepository
 from event_driven_rag_service.repository.search_job_repository import SearchJobRepository
+from event_driven_rag_service.repository.maintenance_repository import MaintenanceRepository
 from event_driven_rag_service.api.sync import router as sync_router
 from event_driven_rag_service.api.sync_legacy import router as sync_legacy_router
 from event_driven_rag_service.api.search import router as search_router
 from event_driven_rag_service.api.ui import router as ui_router
+from event_driven_rag_service.api.maintenance import router as maintenance_router
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +67,7 @@ async def lifespan(app: FastAPI):
     post_repo = PostRepository(pool)
     search_job_repo = SearchJobRepository(pool)
     await search_job_repo.ensure_table()
+    maintenance_repo = MaintenanceRepository(pool)
 
     # --- Inject into app state -------------------------------------------
     app.state.pool = pool
@@ -72,6 +75,7 @@ async def lifespan(app: FastAPI):
     app.state.event_bus = event_bus
     app.state.post_repo = post_repo
     app.state.search_job_repo = search_job_repo
+    app.state.maintenance_repo = maintenance_repo
     app.state.seen_post_tables: set[str] = set()
 
     logger.info("Startup complete")
@@ -94,6 +98,7 @@ app.include_router(sync_router)
 app.include_router(sync_legacy_router)
 app.include_router(search_router)
 app.include_router(ui_router)
+app.include_router(maintenance_router)
 
 
 @app.get("/health", tags=["ops"])

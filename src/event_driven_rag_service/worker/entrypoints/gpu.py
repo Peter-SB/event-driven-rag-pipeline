@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import threading
 import time
 from typing import Any
 
@@ -46,13 +47,16 @@ def _load_model(model_name: str) -> Any:
 
     If EMBED_REMOTE_URL is configured, the returned model tries that endpoint
     first and falls back to the local model (below) when it's unreachable.
+    The local model is loaded lazily in that case — it may not be a valid
+    local/HF model at all (e.g. a gguf filename meant only for the remote
+    server), so it should only be touched if the remote endpoint actually
+    goes down.
     """
-    local = _load_local_model(model_name)
     if settings.embed_remote_url:
         cfg = next((c for c in EMBED_CONFIGS.values() if c.model == model_name), None)
         remote_model_name = (cfg.remote_model if cfg and cfg.remote_model else model_name)
         return build_fallback_model(
-            local=local,
+            local=_LazyLocalModel(model_name),
             remote_model_name=remote_model_name,
             base_url=settings.embed_remote_url,
             api_key=settings.embed_remote_api_key,
@@ -61,7 +65,7 @@ def _load_model(model_name: str) -> Any:
             health_interval_s=settings.embed_remote_health_interval_s,
             load_timeout_s=settings.embed_remote_load_timeout_s,
         )
-    return local
+    return _load_local_model(model_name)
 
 
 def _load_local_model(model_name: str) -> Any:
@@ -72,6 +76,10 @@ def _load_local_model(model_name: str) -> Any:
     if os.getenv("MOCK_EMBEDDINGS", "").strip() not in ("", "0", "false", "False"):
         logger.info("Using mock embedding model for %s", model_name)
         return _MockEmbeddingModel(model_name)
+
+    cfg = next((c for c in EMBED_CONFIGS.values() if c.model == model_name), None)
+    if cfg and cfg.local_repo_id:
+        return _load_gguf_model(cfg.local_repo_id, model_name)
 
     try:
         from sentence_transformers import SentenceTransformer
@@ -96,6 +104,62 @@ def _load_local_model(model_name: str) -> Any:
         )
 
 
+def _load_gguf_model(repo_id: str, filename: str) -> Any:
+    """Load a GGUF embedding model via llama-cpp-python (blocking).
+
+    SentenceTransformer cannot load GGUF files, so models distributed only in
+    that format (e.g. Qwen3-Embedding) go through llama-cpp-python instead,
+    which downloads/caches the file from the HF repo the same way ST does.
+    """
+    try:
+        from llama_cpp import Llama
+
+        logger.info("Loading GGUF embedding model via llama-cpp: %s/%s", repo_id, filename)
+        load_start = time.time()
+        llama_model = Llama.from_pretrained(
+            repo_id=repo_id,
+            filename=filename,
+            embedding=True,
+            n_gpu_layers=-1,
+            verbose=False,
+        )
+        load_time = time.time() - load_start
+        record_model_load_time(load_time, filename)
+        logger.info("GGUF model loaded: %s (load_time=%.2fs)", filename, load_time)
+        return _LlamaCppEmbeddingModel(llama_model, filename)
+    except ImportError:
+        logger.warning(
+            "llama-cpp-python not available — falling back to mock. "
+            "Install via: pip install llama-cpp-python"
+        )
+
+
+class _LazyLocalModel:
+    """Defers loading the local embedding model until the first ``encode()`` call.
+
+    Used as the fallback leg of ``FallbackEmbeddingModel`` when a remote
+    endpoint is configured — the local model should only be loaded if the
+    remote endpoint actually goes down, since ``model_name`` may not even be
+    a loadable local/HF model (e.g. a gguf filename meant only for the
+    remote server).
+    """
+
+    def __init__(self, model_name: str) -> None:
+        self._model_name = model_name
+        self._model: Any | None = None
+        self._lock = threading.Lock()
+
+    @property
+    def name(self) -> str:
+        return self._model_name
+
+    def encode(self, texts: list[str]) -> list[list[float]]:
+        with self._lock:
+            if self._model is None:
+                self._model = _load_local_model(self._model_name)
+        return self._model.encode(texts)
+
+
 class _RealEmbeddingModel:
     """Wraps SentenceTransformer to match the EmbeddingModel protocol.
     todo: move to somewhere more sensible"""
@@ -110,6 +174,22 @@ class _RealEmbeddingModel:
 
     def encode(self, texts: list[str]) -> list[list[float]]:
         return self._model.encode(texts)
+
+
+class _LlamaCppEmbeddingModel:
+    """Wraps a llama-cpp-python ``Llama`` (GGUF) model to match the EmbeddingModel protocol."""
+
+    def __init__(self, model: Any, name: str) -> None:
+        self._model = model
+        self._name = name
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def encode(self, texts: list[str]) -> list[list[float]]:
+        result = self._model.create_embedding(texts)
+        return [row["embedding"] for row in result["data"]]
 
 
 class _MockEmbeddingModel:

@@ -30,6 +30,7 @@ dependencies = [
     # Embeddings (GPU worker)
     "sentence-transformers>=3.0",
     "torch>=2.2",
+    "llama-cpp-python>=0.3",  # local fallback for GGUF-only models (e.g. Qwen3-Embedding)
     "httpx>=0.27",      # remote (OpenAI-compatible) embedding endpoint client
 
     # Utilities

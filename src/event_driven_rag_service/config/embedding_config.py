@@ -18,14 +18,18 @@ class EmbedConfig:
     # from `model`. LM Studio assigns its own slug per loaded model rather than reusing the
     # HF/gguf filename, so this can't always be derived from `model`. Defaults to `model`.
     remote_model: str | None = None
+    # HF repo id to load `model` (a .gguf filename) from via llama-cpp-python instead of
+    # SentenceTransformer. Set only for models distributed as GGUF — SentenceTransformer
+    # cannot load those directly. None means `model` is a regular SentenceTransformer id.
+    local_repo_id: str | None = None
 
 
 # Keyed by chunk type — controls chunk sizing per type. Body/title/analysis stay small
 # (aim ~400 words, hard cap 512) since they embed with short-context models; summary_title
 # uses Qwen3's much larger context window, so it can hold a full summary in one chunk (up to 8k words).
 CHUNK_CONFIGS: dict[str, ChunkConfig] = {
-    "body":          ChunkConfig(strategy="boundary", target_words=400,  hard_limit_words=512,  chunk_overlap=0.10),
-    "title":         ChunkConfig(strategy="boundary", target_words=400,  hard_limit_words=512,  chunk_overlap=0.0),
+    "body":          ChunkConfig(strategy="boundary", target_words=400,  hard_limit_words=480,  chunk_overlap=0.10),
+    "title":         ChunkConfig(strategy="boundary", target_words=400,  hard_limit_words=480,  chunk_overlap=0.0),
     "summary_title": ChunkConfig(strategy="boundary", target_words=18000, hard_limit_words=32000, chunk_overlap=0.0),
     "analysis":      ChunkConfig(strategy="boundary", target_words=400,  hard_limit_words=512,  chunk_overlap=0.10),
 }
@@ -46,6 +50,7 @@ qwen3_embed_cfg = EmbedConfig(
     queue="gpu.embed.qwen3-0.6b",
     dim=1024,
     remote_model="text-embedding-qwen3-embedding-0.6b",  # LM Studio's id for this model
+    local_repo_id="Qwen/Qwen3-0.6B",       # loaded via llama-cpp-python
 )
 
 EMBED_CONFIGS: dict[str, EmbedConfig] = {
