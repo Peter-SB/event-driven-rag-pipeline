@@ -267,7 +267,7 @@
         {
             "id": 6,
             "title": "Summary Chunks",
-            "description": "Chunks from the summary_title pipeline (model: Qwen/Qwen3-0.6B). Shows 'No data' until the first summary chunk is processed.",
+            "description": "Chunks from the summary_title pipeline (model: Qwen3-Embedding-0.6B-Q8_0.gguf). Shows 'No data' until the first summary chunk is processed.",
             "type": "stat",
             "datasource": {
                 "type": "postgres",
@@ -286,7 +286,7 @@
                         "uid": "postgres-ds"
                     },
                     "rawQuery": true,
-                    "rawSql": "SELECT COUNT(*) AS \"Summary Chunks\" FROM posts_${library_id}_chunks_summary_title_qwen_qwen3_0_6b",
+                    "rawSql": "SELECT COUNT(*) AS \"Summary Chunks\" FROM posts_${library_id}_chunks_summary_title_qwen3_embedding_0_6b_q8_0_gguf",
                     "format": "table",
                     "refId": "A"
                 }
@@ -554,7 +554,7 @@
                         "uid": "postgres-ds"
                     },
                     "rawQuery": true,
-                    "rawSql": "SELECT COUNT(*) AS \"Summaries Embedded\" FROM posts_${library_id}_chunks_summary_title_qwen_qwen3_0_6b WHERE embedding IS NOT NULL",
+                    "rawSql": "SELECT COUNT(*) AS \"Summaries Embedded\" FROM posts_${library_id}_chunks_summary_title_qwen3_embedding_0_6b_q8_0_gguf WHERE embedding IS NOT NULL",
                     "format": "table",
                     "refId": "A"
                 }
@@ -758,7 +758,7 @@
                         "uid": "postgres-ds"
                     },
                     "rawQuery": true,
-                    "rawSql": "SELECT CASE WHEN SUM(total) = 0 THEN 0 ELSE ROUND(SUM(embedded) * 100.0 / SUM(total), 1) END AS \"Total % Embedded\"\nFROM (\n  SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE embedding IS NOT NULL) AS embedded\n    FROM posts_${library_id}_chunks_body_baai_bge_base_en_v1_5\n  UNION ALL\n  SELECT COUNT(*), COUNT(*) FILTER (WHERE embedding IS NOT NULL)\n    FROM posts_${library_id}_chunks_title_baai_bge_small_en_v1_5\n  UNION ALL\n  SELECT COUNT(*), COUNT(*) FILTER (WHERE embedding IS NOT NULL)\n    FROM posts_${library_id}_chunks_summary_title_qwen_qwen3_0_6b\n) sub",
+                    "rawSql": "SELECT CASE WHEN SUM(total) = 0 THEN 0 ELSE ROUND(SUM(embedded) * 100.0 / SUM(total), 1) END AS \"Total % Embedded\"\nFROM (\n  SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE embedding IS NOT NULL) AS embedded\n    FROM posts_${library_id}_chunks_body_baai_bge_base_en_v1_5\n  UNION ALL\n  SELECT COUNT(*), COUNT(*) FILTER (WHERE embedding IS NOT NULL)\n    FROM posts_${library_id}_chunks_title_baai_bge_small_en_v1_5\n  UNION ALL\n  SELECT COUNT(*), COUNT(*) FILTER (WHERE embedding IS NOT NULL)\n    FROM posts_${library_id}_chunks_summary_title_qwen3_embedding_0_6b_q8_0_gguf\n) sub",
                     "format": "table",
                     "refId": "A"
                 }
@@ -832,7 +832,7 @@
                         "uid": "postgres-ds"
                     },
                     "rawQuery": true,
-                    "rawSql": "SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE ROUND(COUNT(*) FILTER (WHERE embedding IS NOT NULL) * 100.0 / COUNT(*), 1) END AS \"Summaries % Embedded\"\nFROM posts_${library_id}_chunks_summary_title_qwen_qwen3_0_6b",
+                    "rawSql": "SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE ROUND(COUNT(*) FILTER (WHERE embedding IS NOT NULL) * 100.0 / COUNT(*), 1) END AS \"Summaries % Embedded\"\nFROM posts_${library_id}_chunks_summary_title_qwen3_embedding_0_6b_q8_0_gguf",
                     "format": "table",
                     "refId": "A"
                 }

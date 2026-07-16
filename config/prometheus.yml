@@ -16,9 +16,13 @@ scrape_configs:
     static_configs:
       - targets: ["rabbitmq:15692"]
 
-  # RabbitMQ per-queue/per-channel metrics — separate endpoint required
+  # RabbitMQ per-queue/per-channel metrics — /metrics only exposes cluster-wide
+  # aggregates; per-object detail (e.g. rabbitmq_queue_messages_ready{queue=...})
+  # requires /metrics/detailed with an explicit family selector.
   - job_name: "rabbitmq-per-object"
-    metrics_path: /metrics/per-object
+    metrics_path: /metrics/detailed
+    params:
+      family: ["queue_coarse_metrics", "queue_metrics"]
     static_configs:
       - targets: ["rabbitmq:15692"]
 
