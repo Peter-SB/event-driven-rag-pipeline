@@ -27,7 +27,10 @@ from event_driven_rag_service.handlers.chunk_handler import (
     _build_chunks,
     _select_strategy,
 )
-from event_driven_rag_service.utils.chunk_strategies import SplitTextAtIndexStrategy
+from event_driven_rag_service.utils.chunk_strategies import (
+    ChunkAtBoundaryStrategy,
+    SplitTextAtIndexStrategy,
+)
 from tests.utils.factories import (
     FakeEventBus,
     FakePostFetcher,
@@ -356,10 +359,11 @@ def test_split_text_at_index_splits_long_text_at_max_chars():
     assert "".join(chunks) == text
 
 
-def test_split_text_at_index_strategy_selected_for_summary_title():
-    """_select_strategy should return SplitTextAtIndexStrategy for summary_title."""
+def test_boundary_strategy_selected_for_summary_title():
+    """_select_strategy should return a boundary strategy sized for summary_title (8k word cap)."""
     strategy = _select_strategy("summary_title")
-    assert isinstance(strategy, SplitTextAtIndexStrategy)
+    assert isinstance(strategy, ChunkAtBoundaryStrategy)
+    assert strategy.hard_limit == 8000
 
 
 # ---------------------------------------------------------------------------
@@ -473,10 +477,11 @@ def test_resolve_text_prefers_custom_title_over_title():
     assert result == "Custom Title"
 
 
-def test_split_text_at_index_strategy_selected_for_title():
-    """_select_strategy should return SplitTextAtIndexStrategy for title."""
+def test_boundary_strategy_selected_for_title():
+    """_select_strategy should return a boundary strategy sized for title (512-word cap)."""
     strategy = _select_strategy("title")
-    assert isinstance(strategy, SplitTextAtIndexStrategy)
+    assert isinstance(strategy, ChunkAtBoundaryStrategy)
+    assert strategy.hard_limit == 512
 
 
 @pytest.mark.asyncio

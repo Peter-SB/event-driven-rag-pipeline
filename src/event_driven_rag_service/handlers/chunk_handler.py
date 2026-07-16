@@ -25,7 +25,11 @@ from typing import Protocol
 
 from opentelemetry import trace
 
-from event_driven_rag_service.config.embedding_config import CHUNK_CONFIG, EMBED_CONFIGS
+from event_driven_rag_service.config.embedding_config import (
+    CHUNK_CONFIGS,
+    DEFAULT_CHUNK_CONFIG,
+    EMBED_CONFIGS,
+)
 from event_driven_rag_service.data_models.chunk import Chunk, ChunkMetadata
 from event_driven_rag_service.data_models.post import Post
 from event_driven_rag_service.events.chunk_events import ChunksCreatedEvent
@@ -40,7 +44,6 @@ from event_driven_rag_service.tasks.chunk_task import ChunkTask
 from event_driven_rag_service.utils.tracing_utils import extract_trace_context
 from event_driven_rag_service.utils.chunk_strategies import (
     ChunkAtBoundaryStrategy,
-    SplitTextAtIndexStrategy,
     ChunkStrategy,
 )
 
@@ -93,24 +96,29 @@ def _split_text_fallback(
     return [text[i: i + target] for i in range(0, len(text), target - overlap)]
 
 
-_boundary_strategy = ChunkAtBoundaryStrategy(
-    target=CHUNK_CONFIG.target_words,
-    overlap=CHUNK_CONFIG.chunk_overlap,
-)
+def _strategy_from_config(config) -> ChunkAtBoundaryStrategy:
+    return ChunkAtBoundaryStrategy(
+        target=config.target_words,
+        hard_limit=config.hard_limit_words,
+        overlap=config.chunk_overlap,
+    )
 
-_default_strategy = SplitTextAtIndexStrategy(max_chars=4_096)
+
+# One boundary strategy per chunk type, sized from CHUNK_CONFIGS (config/embedding_config.py).
+_STRATEGIES: dict[str, ChunkAtBoundaryStrategy] = {
+    task_type: _strategy_from_config(config) for task_type, config in CHUNK_CONFIGS.items()
+}
+_default_strategy = _strategy_from_config(DEFAULT_CHUNK_CONFIG)
 
 
-def _select_strategy(task_type: str):
-    """Select the appropriate chunking strategy based on task_type."""
-    if task_type in ("summary_title", "title"):
-        return _default_strategy
-    return _boundary_strategy
+def _select_strategy(task_type: str) -> ChunkStrategy:
+    """Select the chunking strategy configured for task_type, falling back to the default."""
+    return _STRATEGIES.get(task_type, _default_strategy)
 
 
 def _chunk_text(text: str, strategy: ChunkStrategy | None = None) -> list[str]:
     """Split text using the specified strategy; fall back to char-based if needed."""
-    strategy = strategy or _boundary_strategy
+    strategy = strategy or _default_strategy
     windows = strategy.chunk(text)
     if not windows:
         windows = _split_text_fallback(text)

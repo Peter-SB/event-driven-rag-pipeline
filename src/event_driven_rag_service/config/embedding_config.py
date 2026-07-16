@@ -5,6 +5,7 @@ from dataclasses import dataclass
 class ChunkConfig:
     strategy: str
     target_words: int       # desired chunk size in words
+    hard_limit_words: int   # absolute max words per chunk before a forced split
     chunk_overlap: float    # fraction of previous chunk to prepend as overlap (e.g. 0.10)
 
 
@@ -19,9 +20,21 @@ class EmbedConfig:
     remote_model: str | None = None
 
 
-CHUNK_CONFIG = ChunkConfig(
+# Keyed by chunk type — controls chunk sizing per type. Body/title/analysis stay small
+# (aim ~400 words, hard cap 512) since they embed with short-context models; summary_title
+# uses Qwen3's much larger context window, so it can hold a full summary in one chunk (up to 8k words).
+CHUNK_CONFIGS: dict[str, ChunkConfig] = {
+    "body":          ChunkConfig(strategy="boundary", target_words=400,  hard_limit_words=512,  chunk_overlap=0.10),
+    "title":         ChunkConfig(strategy="boundary", target_words=400,  hard_limit_words=512,  chunk_overlap=0.0),
+    "summary_title": ChunkConfig(strategy="boundary", target_words=18000, hard_limit_words=32000, chunk_overlap=0.0),
+    "analysis":      ChunkConfig(strategy="boundary", target_words=400,  hard_limit_words=512,  chunk_overlap=0.10),
+}
+
+# Fallback for any task_type not listed in CHUNK_CONFIGS above.
+DEFAULT_CHUNK_CONFIG = ChunkConfig(
     strategy="boundary",
     target_words=500,
+    hard_limit_words=750,
     chunk_overlap=0.10,
 )
 
