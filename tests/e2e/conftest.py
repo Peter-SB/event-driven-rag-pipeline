@@ -107,7 +107,7 @@ async def async_client(postgres_pool_e2e: asyncpg.Pool):
         await conn.execute("DROP TABLE IF EXISTS posts_e2e")
         await conn.execute("DROP TABLE IF EXISTS posts_e2e_chunks_body_baai_bge_base_en_v1_5")
         await conn.execute("DROP TABLE IF EXISTS posts_e2e_chunks_title_baai_bge_small_en_v1_5")
-        await conn.execute("DROP TABLE IF EXISTS posts_e2e_chunks_summary_title_qwen_qwen3_0_6b")
+        await conn.execute("DROP TABLE IF EXISTS posts_e2e_chunks_summary_title_qwen3_embedding_0_6b_q8_0_gguf")
 
     async with httpx.AsyncClient(base_url=_API_BASE, timeout=30.0) as client:
         yield client
@@ -118,6 +118,6 @@ async def async_client(postgres_pool_e2e: asyncpg.Pool):
         await conn.execute("DROP TABLE IF EXISTS posts_e2e")
         await conn.execute("DROP TABLE IF EXISTS posts_e2e_chunks_body_baai_bge_base_en_v1_5")
         await conn.execute("DROP TABLE IF EXISTS posts_e2e_chunks_title_baai_bge_small_en_v1_5")
-        await conn.execute("DROP TABLE IF EXISTS posts_e2e_chunks_summary_title_qwen_qwen3_0_6b")
+        await conn.execute("DROP TABLE IF EXISTS posts_e2e_chunks_summary_title_qwen3_embedding_0_6b_q8_0_gguf")
         await conn.execute("DELETE FROM event_log")
         await conn.execute("DELETE FROM consumer_offsets")

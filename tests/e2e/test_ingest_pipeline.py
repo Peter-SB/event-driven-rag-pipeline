@@ -756,7 +756,7 @@ async def test_summary_title_chunking_and_embedding_pipeline(
     logger.info("post.synced event verified: has_summary=%s", ps_event["has_summary"])
 
     # Step 3: Wait for summary_title chunk table to be created
-    summary_chunk_table = "posts_e2e_chunks_summary_title_qwen_qwen3_0_6b"
+    summary_chunk_table = "posts_e2e_chunks_summary_title_qwen3_embedding_0_6b_q8_0_gguf"
 
     table_exists = False
     for attempt in range(20):

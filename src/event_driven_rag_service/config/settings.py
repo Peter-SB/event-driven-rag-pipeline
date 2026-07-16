@@ -77,6 +77,10 @@ class Settings:
     embed_remote_health_path: str = field(
         default_factory=lambda: os.getenv("EMBED_REMOTE_HEALTH_PATH", "/models")
     )
+    # Timeout for the model-load call (loading a model from disk is much slower than inference).
+    embed_remote_load_timeout_s: float = field(
+        default_factory=lambda: float(os.getenv("EMBED_REMOTE_LOAD_TIMEOUT_S", "120.0"))
+    )
 
 
 settings = Settings()

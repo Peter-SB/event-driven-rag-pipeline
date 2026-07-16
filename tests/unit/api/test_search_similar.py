@@ -309,9 +309,9 @@ def test_title_uses_correct_chunk_table(client):
 
 
 def test_summary_title_uses_correct_chunk_table(client):
-    """summary_title should derive table posts_lib_chunks_summary_title_qwen_qwen3_0_6b."""
+    """summary_title should derive table posts_lib_chunks_summary_title_qwen3_embedding_0_6b_q8_0_gguf."""
     fake = FakeChunkRepo(embeddings=[[1.0]], search_results=[])
     _similar_post(client, fake, chunk_type="summary_title", library_id="lib")
 
     _, table_name = fake.get_embeddings_calls[0]
-    assert table_name == "posts_lib_chunks_summary_title_qwen_qwen3_0_6b"
+    assert table_name == "posts_lib_chunks_summary_title_qwen3_embedding_0_6b_q8_0_gguf"

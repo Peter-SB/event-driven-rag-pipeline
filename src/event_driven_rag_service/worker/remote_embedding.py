@@ -10,6 +10,15 @@ Efficiency note: health is checked by a background thread on a fixed interval
 healthy remote endpoint adds no extra round trip. A live request failure still
 demotes the cached status immediately so a batch never needs to wait out a
 timeout mid-flight after the machine has clearly gone down.
+
+Model availability: before the first ``encode()`` call (and again after the
+endpoint recovers from being down), ``RemoteEmbeddingModel`` checks that the
+target model appears in the loaded-models list (``GET /models``). If it is
+missing it sends a load request via the LM Studio native API
+(``POST /api/v1/models/load``).  A separate ``load_client`` with a longer
+timeout is used for that call since loading a model from disk can take a
+minute or more.  Once the model is confirmed loaded the flag stays set until
+the endpoint goes down and comes back up.
 """
 from __future__ import annotations
 
@@ -86,17 +95,85 @@ class RemoteEndpointHealth:
 
 
 class RemoteEmbeddingModel:
-    """EmbeddingModel implementation calling an OpenAI-compatible /embeddings endpoint."""
+    """EmbeddingModel implementation calling an OpenAI-compatible /embeddings endpoint.
 
-    def __init__(self, client: httpx.Client, model_name: str) -> None:
+    Before the first encode() call (and after a down→up health transition) it
+    verifies the target model is loaded on the remote server.  If the model is
+    absent it requests a load via the LM Studio native API using ``load_client``
+    (a separate httpx.Client pointed at the server root with a longer timeout).
+    ``load_client=None`` disables the auto-load behaviour (model must already be
+    loaded; a missing model will surface as a 4xx error on the /embeddings call).
+    """
+
+    def __init__(
+        self,
+        client: httpx.Client,
+        model_name: str,
+        load_client: httpx.Client | None = None,
+    ) -> None:
         self._client = client
         self._name = model_name
+        self._load_client = load_client
+        self._model_verified = False
+        self._lock = threading.Lock()
 
     @property
     def name(self) -> str:
         return self._name
 
+    def reset_verified(self) -> None:
+        """Mark the model as unverified so it will be re-checked on the next encode() call.
+
+        Called by FallbackEmbeddingModel when the endpoint recovers after being down.
+        """
+        with self._lock:
+            self._model_verified = False
+
+    def _ensure_model_available(self) -> None:
+        """Check the loaded-models list and request a load if the model is absent."""
+        with self._lock:
+            if self._model_verified:
+                return
+
+        try:
+            resp = self._client.get("/models")
+            resp.raise_for_status()
+            loaded_ids = {m.get("id") for m in resp.json().get("data", [])}
+
+            if self._name in loaded_ids:
+                logger.info("Remote model already loaded: %s", self._name)
+            elif self._load_client is None:
+                logger.warning(
+                    "Remote model %r is not in the loaded-models list and no load endpoint "
+                    "is configured — proceeding; the /embeddings call may fail",
+                    self._name,
+                )
+            else:
+                logger.info(
+                    "Remote model %r not found in loaded models — requesting load via "
+                    "LM Studio API (POST /api/v1/models/load)",
+                    self._name,
+                )
+                load_resp = self._load_client.post(
+                    "/api/v1/models/load", json={"model": self._name}
+                )
+                load_resp.raise_for_status()
+                logger.info("Remote model loaded successfully: %s", self._name)
+
+        except Exception:
+            logger.warning(
+                "Could not verify/load remote model %r — proceeding anyway; "
+                "the /embeddings call will reveal whether the model is available",
+                self._name,
+                exc_info=True,
+            )
+            return
+
+        with self._lock:
+            self._model_verified = True
+
     def encode(self, texts: list[str]) -> list[list[float]]:
+        self._ensure_model_available()
         resp = self._client.post("/embeddings", json={"model": self._name, "input": texts})
         resp.raise_for_status()
         data = resp.json()["data"]
@@ -140,6 +217,7 @@ class FallbackEmbeddingModel:
                 return vectors
             except Exception:
                 if self._health.mark_down():
+                    self._remote.reset_verified()
                     logger.warning(
                         "Remote embedding request failed — falling back to local (endpoint=%s model=%s)",
                         self._endpoint_label,
@@ -155,6 +233,12 @@ class FallbackEmbeddingModel:
         return vectors
 
 
+def _derive_root_url(base_url: str) -> str:
+    """Strip the path from a URL, leaving only scheme + host (e.g. http://host:1234/v1 → http://host:1234)."""
+    parsed = urlparse(base_url)
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
 def build_fallback_model(
     local: EmbeddingModel,
     remote_model_name: str,
@@ -163,19 +247,27 @@ def build_fallback_model(
     timeout_s: float,
     health_path: str,
     health_interval_s: float,
+    load_timeout_s: float = 120.0,
 ) -> FallbackEmbeddingModel:
     """Construct a FallbackEmbeddingModel and start its background health poller.
 
     ``remote_model_name`` is the model id to send to the remote endpoint — this
     can differ from ``local.name`` since e.g. LM Studio assigns its own slug
     per loaded model rather than reusing the local HF/gguf name.
+
+    ``load_timeout_s`` governs the LM Studio model-load call which can take
+    significantly longer than a regular inference request (model files need to
+    be read from disk and mapped into GPU memory).
     """
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     client = httpx.Client(base_url=base_url, timeout=timeout_s, headers=headers)
 
+    root_url = _derive_root_url(base_url)
+    load_client = httpx.Client(base_url=root_url, timeout=load_timeout_s, headers=headers)
+
     health = RemoteEndpointHealth(client, health_path, health_interval_s)
     health.start()
 
-    remote = RemoteEmbeddingModel(client, remote_model_name)
+    remote = RemoteEmbeddingModel(client, remote_model_name, load_client=load_client)
     endpoint_label = urlparse(base_url).netloc or base_url
     return FallbackEmbeddingModel(remote, local, health, endpoint_label)
