@@ -16,11 +16,6 @@ scrape_configs:
     static_configs:
       - targets: ["rabbitmq:15692"]
 
-  # RabbitMQ aggregate metrics (via built-in rabbitmq_prometheus plugin)
-  - job_name: "rabbitmq"
-    static_configs:
-      - targets: ["rabbitmq:15692"]
-
   # RabbitMQ per-queue/per-channel metrics — separate endpoint required
   - job_name: "rabbitmq-per-object"
     metrics_path: /metrics/per-object
