@@ -53,8 +53,15 @@ qwen3_embed_cfg = EmbedConfig(
     local_repo_id="Qwen/Qwen3-0.6B",       # loaded via llama-cpp-python
 )
 
+bge_base_embed_cfg = EmbedConfig(
+    remote_model="text-embedding-bge-base-en-v1.5",
+    model="BAAI/bge-base-en-v1.5",
+    queue="gpu.embed.bge-base-en-v1.5",
+    dim=768,
+)
+
 EMBED_CONFIGS: dict[str, EmbedConfig] = {
-    "body":          EmbedConfig(model="BAAI/bge-base-en-v1.5",     queue="gpu.embed.bge-base-en-v1.5",     dim=768),
+    "body":          bge_base_embed_cfg,
     "title":         EmbedConfig(model="BAAI/bge-small-en-v1.5",    queue="gpu.embed.bge-small-en-v1.5",    dim=384),
     "summary_title": qwen3_embed_cfg,
     "analysis":      qwen3_embed_cfg,

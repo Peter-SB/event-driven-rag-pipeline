@@ -271,7 +271,8 @@ def _on_message_callback(self, ch, method, properties, body):
 | `EMBED_REMOTE_URL` | (unset) | GPU worker | OpenAI-compatible base URL (e.g. LM Studio) to try before the local model; unset disables remote embedding |
 | `EMBED_REMOTE_API_KEY` | (unset) | GPU worker | Optional bearer token sent to the remote endpoint |
 | `EMBED_REMOTE_TIMEOUT_S` | `10.0` | GPU worker | Per-request timeout for the remote endpoint |
-| `EMBED_REMOTE_HEALTH_INTERVAL_S` | `30.0` | GPU worker | Background health-check poll interval; a failed live request also demotes status immediately |
+| `EMBED_REMOTE_HEALTH_PATH` | `/models` | GPU worker | Path checked for endpoint reachability before every batch (no background poller — see [remote_embedding.py](src/event_driven_rag_service/worker/remote_embedding.py)) |
+| `EMBED_REMOTE_LOAD_TIMEOUT_S` | `120.0` | GPU worker | Timeout for the LM Studio model-load call (`POST /api/v1/models/load`) |
 
 ---
 

@@ -45,24 +45,30 @@ logger = logging.getLogger(__name__)
 def _load_model(model_name: str) -> Any:
     """Load an embedding model by name (blocking — runs in the main thread).
 
-    If EMBED_REMOTE_URL is configured, the returned model tries that endpoint
-    first and falls back to the local model (below) when it's unreachable.
-    The local model is loaded lazily in that case — it may not be a valid
-    local/HF model at all (e.g. a gguf filename meant only for the remote
-    server), so it should only be touched if the remote endpoint actually
-    goes down.
+    If EMBED_REMOTE_URL is configured *and* this model has an explicit
+    ``remote_model`` entry in EMBED_CONFIGS, the returned model tries that
+    endpoint first and falls back to the local model (below) when it's
+    unreachable. The local model is loaded lazily in that case — it may not
+    be a valid local/HF model at all (e.g. a gguf filename meant only for
+    the remote server), so it should only be touched if the remote endpoint
+    actually goes down.
+
+    Models without a ``remote_model`` entry always load locally, even when
+    EMBED_REMOTE_URL is set — the remote server (e.g. LM Studio) is not
+    guaranteed to have every model loaded, and blindly routing every model
+    through it would fail the model-load/verify call and every /embeddings
+    request for models it doesn't have, on every single encode(). Opting in
+    per model via ``remote_model`` keeps that failure mode from happening.
     """
-    if settings.embed_remote_url:
-        cfg = next((c for c in EMBED_CONFIGS.values() if c.model == model_name), None)
-        remote_model_name = (cfg.remote_model if cfg and cfg.remote_model else model_name)
+    cfg = next((c for c in EMBED_CONFIGS.values() if c.model == model_name), None)
+    if settings.embed_remote_url and cfg and cfg.remote_model:
         return build_fallback_model(
             local=_LazyLocalModel(model_name),
-            remote_model_name=remote_model_name,
+            remote_model_name=cfg.remote_model,
             base_url=settings.embed_remote_url,
             api_key=settings.embed_remote_api_key,
             timeout_s=settings.embed_remote_timeout_s,
             health_path=settings.embed_remote_health_path,
-            health_interval_s=settings.embed_remote_health_interval_s,
             load_timeout_s=settings.embed_remote_load_timeout_s,
         )
     return _load_local_model(model_name)

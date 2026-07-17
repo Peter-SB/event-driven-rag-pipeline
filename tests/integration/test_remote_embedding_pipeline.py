@@ -23,7 +23,6 @@ from event_driven_rag_service.tasks.embed_task import EmbedTask
 from event_driven_rag_service.worker.remote_embedding import (
     FallbackEmbeddingModel,
     RemoteEmbeddingModel,
-    RemoteEndpointHealth,
 )
 from tests.utils.factories import FakeEventBus, make_chunk
 
@@ -54,11 +53,21 @@ def _remote_client(handler) -> httpx.Client:
     return httpx.Client(base_url="http://lm-studio.test/v1", transport=httpx.MockTransport(handler))
 
 
-def _build_model(handler, local) -> tuple[FallbackEmbeddingModel, RemoteEndpointHealth]:
+def _loaded_state_client() -> httpx.Client:
+    """load_client stub reporting the target model as already loaded, so tests
+    that only care about the /embeddings call don't need to also mock the
+    native LM Studio load API."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": [{"id": _MODEL_NAME, "state": "loaded"}]})
+
+    return httpx.Client(base_url="http://lm-studio.test", transport=httpx.MockTransport(handler))
+
+
+def _build_model(handler, local) -> FallbackEmbeddingModel:
     client = _remote_client(handler)
-    remote = RemoteEmbeddingModel(client, _MODEL_NAME)
-    health = RemoteEndpointHealth(client, "/models", interval_s=9999)
-    return FallbackEmbeddingModel(remote, local, health, "lm-studio.test"), health
+    remote = RemoteEmbeddingModel(client, _MODEL_NAME, load_client=_loaded_state_client())
+    return FallbackEmbeddingModel(remote, local, "lm-studio.test")
 
 
 @pytest.mark.asyncio
@@ -74,7 +83,7 @@ async def test_embed_chunks_persists_vectors_from_healthy_remote(postgres_pool: 
         return httpx.Response(200, json={"data": [{"embedding": [0.9] * _DIM}]})
 
     local = _FakeLocalModel(_MODEL_NAME, _DIM)
-    model, health = _build_model(handler, local)
+    model = _build_model(handler, local)
 
     embed_handler = EmbedHandler(chunk_fetcher=repo, embedding_store=repo, event_log=FakeEventBus())
     task = EmbedTask(
@@ -92,7 +101,6 @@ async def test_embed_chunks_persists_vectors_from_healthy_remote(postgres_pool: 
     assert failed == []
     assert len(ok) == 1
     assert local.encode_calls == 0, "remote was healthy — local model should never run"
-    assert health.is_up is True
 
     async with postgres_pool.acquire() as conn:
         row = await conn.fetchrow(f"SELECT embedding FROM {table_name} WHERE id = $1", chunk.id)
@@ -113,7 +121,7 @@ async def test_embed_chunks_falls_back_to_local_when_remote_down(postgres_pool: 
         return httpx.Response(503)
 
     local = _FakeLocalModel(_MODEL_NAME, _DIM)
-    model, health = _build_model(handler, local)
+    model = _build_model(handler, local)
 
     embed_handler = EmbedHandler(chunk_fetcher=repo, embedding_store=repo, event_log=FakeEventBus())
     task = EmbedTask(
@@ -131,7 +139,6 @@ async def test_embed_chunks_falls_back_to_local_when_remote_down(postgres_pool: 
     assert failed == [], "batch should still succeed via the local fallback"
     assert len(ok) == 1
     assert local.encode_calls == 1
-    assert health.is_up is False
 
     async with postgres_pool.acquire() as conn:
         row = await conn.fetchrow(f"SELECT embedding FROM {table_name} WHERE id = $1", chunk.id)
