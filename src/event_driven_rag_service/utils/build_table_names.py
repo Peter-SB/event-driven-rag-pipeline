@@ -1,3 +1,37 @@
+import logging
+
+logger = logging.getLogger(__name__)
+
+# Postgres identifiers (table/column/index names) are stored as the `name`
+# type, hard-capped at NAMEDATALEN-1 = 63 bytes. CREATE TABLE silently
+# truncates anything longer, so any code that later recomputes the "full"
+# name for a lookup (table_exists, search) must apply the same truncation
+# or it'll never match what's actually in the database.
+POSTGRES_MAX_IDENTIFIER_LENGTH = 63
+
+
+def _truncate_identifier(name: str) -> str:
+    """Truncate *name* to Postgres's identifier length limit, matching the
+    truncation Postgres itself applies at CREATE TABLE time.
+
+    Warns when truncation happens, since two distinct inputs longer than the
+    limit but sharing the same first 63 bytes would collide on the same table.
+    """
+    if len(name) <= POSTGRES_MAX_IDENTIFIER_LENGTH:
+        return name
+
+    truncated = name[:POSTGRES_MAX_IDENTIFIER_LENGTH]
+    logger.warning(
+        "Table name %r (%d chars) exceeds Postgres's %d-char identifier limit; "
+        "truncated to %r. Distinct names sharing this prefix will collide.",
+        name,
+        len(name),
+        POSTGRES_MAX_IDENTIFIER_LENGTH,
+        truncated,
+    )
+    return truncated
+
+
 def sanitize_model_name(model: str) -> str:
     """Sanitize model name for use in table names.
 
@@ -13,6 +47,9 @@ def build_chunk_table_name(post_table: str, task_type: str, model: str) -> str:
     Format: {post_table}_chunks_{task_type}_{model_sanitized}
     Example: posts_main_chunks_body_bge_base_v1_5
 
+    Truncated to Postgres's 63-char identifier limit if the full name would
+    exceed it (see `_truncate_identifier`).
+
     Args:
         post_table: The library's post table (e.g., "posts_main")
         task_type: The chunk type (e.g., "body", "summary_title", "analysis")
@@ -22,7 +59,7 @@ def build_chunk_table_name(post_table: str, task_type: str, model: str) -> str:
     # e.g. "bge-base-v1.5" → "bge_base_v1_5", "qwen3-0.6b" → "qwen3_0_6b"
     model_safe = sanitize_model_name(model)
 
-    return f"{post_table}_chunks_{task_type.lower()}_{model_safe}"
+    return _truncate_identifier(f"{post_table}_chunks_{task_type.lower()}_{model_safe}")
 
 
 
@@ -103,4 +140,4 @@ def build_search_job_table_name(post_table: str, task_type: str, model: str) -> 
         model: The embedding model name (e.g., "bge-base-v1.5")
     """
     model_safe = sanitize_model_name(model)
-    return f"{post_table}_search_jobs_{task_type.lower()}_{model_safe}"
+    return _truncate_identifier(f"{post_table}_search_jobs_{task_type.lower()}_{model_safe}")
