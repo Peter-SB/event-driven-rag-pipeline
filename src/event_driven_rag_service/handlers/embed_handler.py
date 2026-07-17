@@ -19,6 +19,7 @@ from typing import Protocol, TypedDict
 
 from opentelemetry import trace
 
+from event_driven_rag_service.config.embedding_config import EMBED_CONFIGS
 from event_driven_rag_service.events.embedding_events import EmbeddingCompletedEvent
 from event_driven_rag_service.events.search_events import SearchQueryEmbeddedEvent
 from event_driven_rag_service.infrastructure.event_bus import EventBusBase
@@ -330,8 +331,19 @@ class EmbedHandler:
                 return True
 
             try:
+                # Asymmetric retrieval models (Qwen3, BGE) expect the query side
+                # wrapped in an instruction prefix; document/chunk text is embedded
+                # raw. Without it the query embedding stays generic and barely
+                # discriminates between unrelated queries.
+                embed_cfg = next(
+                    (c for c in EMBED_CONFIGS.values() if c.model == model_name), None
+                )
+                query_text = task.query
+                if embed_cfg and embed_cfg.query_prefix:
+                    query_text = embed_cfg.query_prefix + task.query
+
                 encode_start = time.time()
-                vector = encoder.encode([task.query])[0]
+                vector = encoder.encode([query_text])[0]
                 encode_time = time.time() - encode_start
                 record_encode_latency(encode_time, model_name, 1)
 

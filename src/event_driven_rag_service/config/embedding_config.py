@@ -22,6 +22,13 @@ class EmbedConfig:
     # SentenceTransformer. Set only for models distributed as GGUF — SentenceTransformer
     # cannot load those directly. None means `model` is a regular SentenceTransformer id.
     local_repo_id: str | None = None
+    # Text prepended to the raw query string before embedding (never applied to document/
+    # chunk text). These are asymmetric retrieval models — trained so queries and passages
+    # get different input formatting. Without this prefix the query embedding stays generic
+    # and barely discriminates between unrelated queries, so search results end up dominated
+    # by whichever passage sits closest to that generic region regardless of the query.
+    # None means the model doesn't need one (symmetric encoder).
+    query_prefix: str | None = None
 
 
 # Keyed by chunk type — controls chunk sizing per type. Body/title/analysis stay small
@@ -51,6 +58,10 @@ qwen3_embed_cfg = EmbedConfig(
     dim=1024,
     remote_model="text-embedding-qwen3-embedding-0.6b",  # LM Studio's id for this model
     local_repo_id="Qwen/Qwen3-0.6B",       # loaded via llama-cpp-python
+    query_prefix=(
+        "Instruct: Given a web search query, retrieve relevant passages that answer the query\n"
+        "Query: "
+    ),
 )
 
 bge_base_embed_cfg = EmbedConfig(
@@ -58,11 +69,19 @@ bge_base_embed_cfg = EmbedConfig(
     model="BAAI/bge-base-en-v1.5",
     queue="gpu.embed.bge-base-en-v1.5",
     dim=768,
+    query_prefix="Represent this sentence for searching relevant passages: ",
+)
+
+bge_small_embed_cfg = EmbedConfig(
+    model="BAAI/bge-small-en-v1.5",
+    queue="gpu.embed.bge-small-en-v1.5",
+    dim=384,
+    query_prefix="Represent this sentence for searching relevant passages: ",
 )
 
 EMBED_CONFIGS: dict[str, EmbedConfig] = {
     "body":          bge_base_embed_cfg,
-    "title":         EmbedConfig(model="BAAI/bge-small-en-v1.5",    queue="gpu.embed.bge-small-en-v1.5",    dim=384),
+    "title":         bge_small_embed_cfg,
     "summary_title": qwen3_embed_cfg,
     "analysis":      qwen3_embed_cfg,
 }
