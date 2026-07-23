@@ -71,7 +71,7 @@ async def sync_posts_legacy(req: LegacySyncRequest, request: Request) -> dict:
     try:
         library_id = _derive_library_id(req.table_name)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc))
 
     if req.task_types != ["summary"] or req.force_embed:
         logger.warning(

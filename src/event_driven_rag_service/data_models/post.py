@@ -2,7 +2,7 @@ import json
 from datetime import datetime
 from typing import Optional, Union
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class Post(BaseModel):
@@ -50,6 +50,19 @@ class Post(BaseModel):
     embedded_at: Optional[datetime] = Field(None, alias="embeddedAt")
 
     model_config = ConfigDict(populate_by_name=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _default_updated_at(cls, data: object) -> object:
+        """Some client payloads omit updatedAt (or send null) for posts that were
+        never edited after creation. Fall back to addedAt/redditCreatedAt so a
+        single malformed post doesn't 422 the whole sync batch."""
+        if isinstance(data, dict) and not data.get("updatedAt") and not data.get("updated_at"):
+            fallback = data.get("addedAt") or data.get("added_at") \
+                or data.get("redditCreatedAt") or data.get("external_created_at")
+            if fallback is not None:
+                data["updatedAt"] = fallback
+        return data
 
     @field_validator("extra_fields", mode="before")
     @classmethod
