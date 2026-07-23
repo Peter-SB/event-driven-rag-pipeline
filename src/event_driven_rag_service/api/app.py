@@ -18,7 +18,9 @@ from contextlib import asynccontextmanager
 
 import asyncpg
 import aio_pika
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, status
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 
 from event_driven_rag_service.config.settings import settings
 from event_driven_rag_service.infrastructure.observability import setup_observability
@@ -99,6 +101,25 @@ app.include_router(sync_legacy_router)
 app.include_router(search_router)
 app.include_router(ui_router)
 app.include_router(maintenance_router)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """Log the validation errors before returning 422 — the default handler is silent server-side."""
+    body = exc.body
+    if isinstance(body, (bytes, bytearray)):
+        body = body.decode("utf-8", errors="replace")
+    logger.warning(
+        "Request validation failed: method=%s path=%s errors=%s body=%s",
+        request.method,
+        request.url.path,
+        exc.errors(),
+        body,
+    )
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={"detail": exc.errors()},
+    )
 
 
 @app.get("/health", tags=["ops"])
