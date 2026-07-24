@@ -23,7 +23,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from event_driven_rag_service.api.search import router as search_router
+from event_driven_rag_service.api.similar import router as search_router
 from event_driven_rag_service.exceptions import ChunkTableNotFoundError
 
 
@@ -91,7 +91,7 @@ def _similar_post(client, fake_repo, **overrides):
         "k": 5,
         **overrides,
     }
-    with patch("event_driven_rag_service.api.search.ChunkRepository", return_value=fake_repo):
+    with patch("event_driven_rag_service.api.similar.ChunkRepository", return_value=fake_repo):
         return client.post("/search/similar", json=payload)
 
 
@@ -121,13 +121,13 @@ def test_k_zero_returns_422(client):
 
 def test_k_over_max_returns_422(client):
     fake = FakeChunkRepo(embeddings=[[0.1]])
-    resp = _similar_post(client, fake, k=101)
+    resp = _similar_post(client, fake, k=1000)
     assert resp.status_code == 422
 
 
 def test_missing_post_id_returns_422(client):
     fake = FakeChunkRepo(embeddings=[[0.1]])
-    with patch("event_driven_rag_service.api.search.ChunkRepository", return_value=fake):
+    with patch("event_driven_rag_service.api.similar.ChunkRepository", return_value=fake):
         resp = client.post("/search/similar", json={"chunk_type": "body", "library_id": "main"})
     assert resp.status_code == 422
 

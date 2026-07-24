@@ -11,7 +11,6 @@ The event triggers the downstream chunk → embed pipeline via:
 from __future__ import annotations
 
 import logging
-import re
 import time
 from typing import Any, List, Optional
 
@@ -19,6 +18,7 @@ from fastapi import APIRouter, Request, status
 from opentelemetry import trace
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from event_driven_rag_service.api.validators import validate_library_id
 from event_driven_rag_service.data_models.post import Post
 from event_driven_rag_service.events.post_events import PostSyncedEvent
 from event_driven_rag_service.repository.post_repository import PostRepository
@@ -44,13 +44,7 @@ class SyncRequest(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
 
-    @field_validator("library_id", mode="before")
-    @classmethod
-    def _validate_library_id(cls, v: str) -> str:
-        """Library ID must start with a letter and contain only lowercase letters, digits, and underscores."""
-        if not v or not re.match(r"^[a-z][a-z0-9_]*$", v):
-            raise ValueError("library_id must start with '[a-z]' and contain only '[a-z0-9_'")
-        return v
+    _validate_library_id = field_validator("library_id", mode="before")(validate_library_id)
 
 
 

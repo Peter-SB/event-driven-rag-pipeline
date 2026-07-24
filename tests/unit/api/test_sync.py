@@ -174,6 +174,37 @@ def test_sync_post_without_summary(client):
     assert events[0]["has_summary"] is False
 
 
+def test_sync_invalid_library_id_returns_422(client):
+    """library_id must start with '[a-z]' and contain only '[a-z0-9_]'."""
+    post = make_post(post_id=5)
+    response = client.post(
+        "/posts/sync",
+        json={
+            "posts": [post.model_dump(by_alias=True, mode='json')],
+            "library_id": "INVALID-ID",
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_sync_empty_posts_list_returns_empty_results(client):
+    """Syncing with an empty posts list is a no-op — 200 with empty results, no events."""
+    post_repo = client.app.state.post_repo
+    event_bus = client.app.state.event_bus
+    post_repo.ensure_table = AsyncMock()
+
+    response = client.post(
+        "/posts/sync",
+        json={"posts": [], "library_id": "main"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["results"] == []
+    assert event_bus.drain_topic("post.synced") == []
+    # Table is still ensured even with zero posts — table creation isn't gated on post count.
+    post_repo.ensure_table.assert_called_once_with("posts_main")
+
+
 # ---------------------------------------------------------------------------
 # Batch operations
 # ---------------------------------------------------------------------------

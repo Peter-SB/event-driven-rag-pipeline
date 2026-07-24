@@ -193,10 +193,10 @@ def test_create_search_k_zero_returns_422(client):
 
 
 def test_create_search_k_over_max_returns_422(client):
-    """POST /search with k>100 should return 422."""
+    """POST /search with k>999 should return 422."""
     response = client.post(
         "/search/",
-        json={"query": "test", "chunk_type": "body", "k": 101, "library_id": "main"},
+        json={"query": "test", "chunk_type": "body", "k": 1000, "library_id": "main"},
     )
     assert response.status_code == 422
 
@@ -315,3 +315,26 @@ def test_get_search_result_not_found_returns_404(client):
     """GET /search/{job_id} with unknown job_id should return 404."""
     response = client.get("/search/nonexistent-job-id")
     assert response.status_code == 404
+
+
+def test_get_search_result_parses_json_encoded_results_string(client):
+    """Some repository implementations return results as a raw JSON string
+    (e.g. from a jsonb column read without decoding) — the route must parse it."""
+    post_resp = client.post(
+        "/search/",
+        json={"query": "test", "chunk_type": "body", "k": 5, "library_id": "main"},
+    )
+    job_id = post_resp.json()["job_id"]
+
+    repo: FakeSearchJobRepo = client.app.state.search_job_repo
+    repo._jobs[job_id]["status"] = "complete"
+    repo._jobs[job_id]["results"] = (
+        '[{"chunk_id": "abc", "post_id": 1, "text": "chunk text", "metadata": null, "score": 0.5}]'
+    )
+
+    get_resp = client.get(f"/search/{job_id}")
+    assert get_resp.status_code == 200
+    body = get_resp.json()
+    assert body["status"] == "complete"
+    assert len(body["results"]) == 1
+    assert body["results"][0]["chunk_id"] == "abc"
