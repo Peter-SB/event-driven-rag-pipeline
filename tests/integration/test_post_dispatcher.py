@@ -91,7 +91,7 @@ async def test_dispatcher_dispatches_body_task_on_first_post_sync(
     assert len(body_tasks) == 1
     assert body_tasks[0].post_id == 2001
     assert body_tasks[0].post_table == make_post_synced_event(post_id=2001)["post_table"]
-    assert body_tasks[0].embed_model == EMBED_CONFIGS["body"].model
+    assert body_tasks[0].embed_model == EMBED_CONFIGS["body"].primary
 
 
 @pytest.mark.asyncio

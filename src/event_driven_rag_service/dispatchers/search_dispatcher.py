@@ -26,7 +26,7 @@ def _record_queue_lag(event: dict, queue_name: str) -> None:
 
 
 # Map model name → EmbedConfig so the dispatcher can route by embedding_profile.
-_MODEL_TO_CONFIG = {cfg.model: cfg for cfg in EMBED_CONFIGS.values()}
+_MODEL_TO_CONFIG = {cfg.primary: cfg for cfg in EMBED_CONFIGS.values()}
 
 
 class SearchDispatcher:
@@ -62,7 +62,7 @@ class SearchDispatcher:
                 continue
             task = EmbedTask(
                 task_type="query",
-                model_name=embed_cfg.model,
+                model_name=embed_cfg.primary,
                 query=event["query"],
                 query_job_id=event["query_job_id"],
                 trace_id=event.get("trace_id"),

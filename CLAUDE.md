@@ -48,6 +48,7 @@ Postgres + pgvector
 | **Event Bus** | `infrastructure/event_bus.py` | Abstract event log (Redpanda vs Postgres) |
 | **Tasks** | `tasks/{chunk,embed}_task.py` | Pydantic schemas for RabbitMQ messages |
 | **Events** | `events/{post,chunk}_events.py` | Pydantic schemas for event log topics |
+| **Remote embedder** | `remote_embedder_service/` | Standalone FastAPI+CUDA embedding service on the GPU box (replaced LM Studio). Own package, own tests, not imported by the pipeline — see [docs/RemoteEmbedding.md](docs/RemoteEmbedding.md) |
 
 ---
 
@@ -94,7 +95,7 @@ Neither is redundant. Never collapse them into one.
 - Separate tables avoid mixing different embedding approaches
 - Scales naturally (add new library/field/model = add new table)
 
-**Gotcha:** The table name is derived from `post_table`, `task_type`, and `embed_model`. Never hardcode table names — always use `build_chunk_table_name()`.
+**Gotcha:** The table name is derived from `post_table`, `task_type`, and `embed_model` (which carries `EmbedConfig.primary`). Never hardcode table names — always use `build_chunk_table_name()`.
 
 ### 5. Dispatcher Entrypoint Pattern
 
@@ -268,11 +269,11 @@ def _on_message_callback(self, ch, method, properties, body):
 | `REDPANDA_SERVERS` | — | EventBus | Comma-separated broker list (optional, for Redpanda) |
 | `EVENT_BUS` | `postgres` | All | `postgres` or `redpanda` |
 | `MOCK_EMBEDDINGS` | (unset) | GPU worker | If set, use deterministic mock model (for dev/CI) |
-| `EMBED_REMOTE_URL` | (unset) | GPU worker | OpenAI-compatible base URL (e.g. LM Studio) to try before the local model; unset disables remote embedding |
+| `EMBED_REMOTE_URL` | (unset) | GPU worker | Base URL (including `/v1`) of the [remote embedder service](remote_embedder_service/README.md), tried before the local model; unset disables remote embedding |
 | `EMBED_REMOTE_API_KEY` | (unset) | GPU worker | Optional bearer token sent to the remote endpoint |
 | `EMBED_REMOTE_TIMEOUT_S` | `10.0` | GPU worker | Per-request timeout for the remote endpoint |
 | `EMBED_REMOTE_HEALTH_PATH` | `/models` | GPU worker | Path checked for endpoint reachability before every batch (no background poller — see [remote_embedding.py](src/event_driven_rag_service/worker/remote_embedding.py)) |
-| `EMBED_REMOTE_LOAD_TIMEOUT_S` | `120.0` | GPU worker | Timeout for the LM Studio model-load call (`POST /api/v1/models/load`) |
+| `EMBED_REMOTE_LOAD_TIMEOUT_S` | `600.0` | GPU worker | Timeout for the model-load call (`POST /api/v1/models/load`) only, not inference; a first load downloads weights before touching the GPU |
 
 ---
 
@@ -284,6 +285,27 @@ def _on_message_callback(self, ch, method, properties, body):
 2. Update `PostDispatcher._dispatch_chunk_tasks()` to check for the new type
 3. Update `ChunkPostHandler._resolve_text()` to handle the new type
 4. No need to pre-create tables — they're created lazily on first task arrival
+5. If it declares a `remote_model`, add the matching `ModelSpec` to
+   `remote_embedder_service/src/remote_embedder/registry.py` — the two sides
+   agree only by convention, and `test_registry.py` fails when they drift
+
+### EmbedConfig fields
+
+`primary` is the canonical model identity and the config's key in every sense:
+it selects the GPU queue, rides on `ChunkTask.embed_model` and
+`SearchJobCreatedEvent.embedding_profile`, and (sanitised) becomes the model
+segment of the chunk table name. **Changing it renames tables** — see the
+migration note in [docs/RemoteEmbedding.md](docs/RemoteEmbedding.md).
+
+| Field | Purpose |
+|---|---|
+| `primary` | Canonical model id (`org/name`). Identity, routing, table naming. |
+| `queue` / `dim` | RabbitMQ routing key; pgvector column width. |
+| `allow_local` / `allow_remote` | Which legs may serve this model. Both default true; `allow_local=False` makes a failed remote batch raise instead of silently embedding on CPU. |
+| `remote_model` | Wire id on the remote service, when it differs from `primary`. |
+| `gguf` | Optional `GgufSpec(repo_id, filename)` — the local leg loads via llama-cpp instead of SentenceTransformer. |
+| `quantization` | e.g. `"int8"`. Sent on the remote load call; baked into the GGUF locally. |
+| `query_prefix` | Instruction prefix for asymmetric retrieval models (queries only). |
 
 ### Syncing Posts With a New Library
 

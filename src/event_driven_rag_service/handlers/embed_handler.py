@@ -336,7 +336,7 @@ class EmbedHandler:
                 # raw. Without it the query embedding stays generic and barely
                 # discriminates between unrelated queries.
                 embed_cfg = next(
-                    (c for c in EMBED_CONFIGS.values() if c.model == model_name), None
+                    (c for c in EMBED_CONFIGS.values() if c.primary == model_name), None
                 )
                 query_text = task.query
                 if embed_cfg and embed_cfg.query_prefix:

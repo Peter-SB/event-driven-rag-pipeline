@@ -75,9 +75,14 @@ class Settings:
     embed_remote_health_path: str = field(
         default_factory=lambda: os.getenv("EMBED_REMOTE_HEALTH_PATH", "/models")
     )
-    # Timeout for the model-load call (loading a model from disk is much slower than inference).
+    # Timeout for the model-load call, which is a different order of magnitude to
+    # inference: the *first* load of a model downloads its weights from HuggingFace
+    # (~1.2GB for Qwen3-Embedding-0.6B) before mapping them into VRAM. Ten minutes
+    # covers that on a domestic connection. Overshooting is cheap — the call
+    # returns as soon as the model is ready — whereas undershooting makes every
+    # cold start look like a failure and sends the batch to the local fallback.
     embed_remote_load_timeout_s: float = field(
-        default_factory=lambda: float(os.getenv("EMBED_REMOTE_LOAD_TIMEOUT_S", "120.0"))
+        default_factory=lambda: float(os.getenv("EMBED_REMOTE_LOAD_TIMEOUT_S", "600.0"))
     )
 
 

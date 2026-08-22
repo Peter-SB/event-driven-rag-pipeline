@@ -45,6 +45,7 @@ BINDINGS: dict[str, list[tuple[str, str]]] = {
         ("gpu.embed.bge-base-en-v1.5",       "gpu.embed.bge-base-en-v1.5"),
         ("gpu.embed.bge-small-en-v1.5",     "gpu.embed.bge-small-en-v1.5"),
         ("gpu.embed.qwen3-0.6b",            "gpu.embed.qwen3-0.6b"),
+        ("gpu.embed.qwen3-4b",              "gpu.embed.qwen3-4b"),
     ],
     "inference": [
         ("gpu.infer_local.qwen3.5-4b",      "gpu.infer_local.qwen3.5-4b"),

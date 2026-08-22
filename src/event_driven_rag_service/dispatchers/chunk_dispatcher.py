@@ -83,13 +83,13 @@ class ChunkDispatcher:
 
             span.set_attribute("post_id", event["post_id"])
             span.set_attribute("chunk_count", len(event["chunk_ids"]))
-            span.set_attribute("model", embed_cfg.model)
+            span.set_attribute("model", embed_cfg.primary)
 
             trace_id, parent_span_id = propagate_trace(event.get("trace_id"))
 
             task = EmbedTask(
                 task_type="chunk",
-                model_name=embed_cfg.model,
+                model_name=embed_cfg.primary,
                 post_id=event["post_id"],
                 post_table=event["post_table"],
                 chunk_ids=event["chunk_ids"],

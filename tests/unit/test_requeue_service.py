@@ -65,7 +65,7 @@ class FakeEmbedTaskPublisher:
 # ---------------------------------------------------------------------------
 
 _BODY_CFG = EMBED_CONFIGS["body"]
-_BODY_TABLE = build_chunk_table_name("posts_main", "body", _BODY_CFG.model)
+_BODY_TABLE = build_chunk_table_name("posts_main", "body", _BODY_CFG.primary)
 
 
 def _make_service(
@@ -128,7 +128,7 @@ async def test_single_chunk_produces_one_task():
 
     task, routing_key = publisher.published[0]
     assert routing_key == _BODY_CFG.queue
-    assert task.model_name == _BODY_CFG.model
+    assert task.model_name == _BODY_CFG.primary
     assert task.post_id == 42
     assert task.chunk_ids == ["chunk-1"]
     assert task.chunk_table == _BODY_TABLE
@@ -176,7 +176,7 @@ async def test_chunks_from_different_posts_produce_separate_tasks():
 @pytest.mark.asyncio
 async def test_multiple_tables_all_get_tasks():
     title_cfg = EMBED_CONFIGS["title"]
-    title_table = build_chunk_table_name("posts_main", "title", title_cfg.model)
+    title_table = build_chunk_table_name("posts_main", "title", title_cfg.primary)
 
     service, _, publisher = _make_service(
         tables=[_BODY_TABLE, title_table],
@@ -220,7 +220,7 @@ async def test_unrecognised_table_is_skipped_and_counted():
 @pytest.mark.asyncio
 async def test_totals_accumulate_across_tables():
     title_cfg = EMBED_CONFIGS["title"]
-    title_table = build_chunk_table_name("posts_work", "title", title_cfg.model)
+    title_table = build_chunk_table_name("posts_work", "title", title_cfg.primary)
 
     service, _, publisher = _make_service(
         tables=[_BODY_TABLE, title_table],

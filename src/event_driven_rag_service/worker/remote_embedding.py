@@ -1,9 +1,10 @@
 """
-Remote (OpenAI-compatible) embedding backend with local CPU fallback.
+Remote (OpenAI-compatible) embedding backend with local fallback.
 
-Lets the GPU worker call a remote embedding server (e.g. LM Studio running on
-a homelab gaming PC) instead of computing embeddings locally, while staying
-available when that machine is off or unreachable.
+Lets the GPU worker call ``remote_embedder_service`` on a homelab GPU box
+instead of computing embeddings locally, while staying available when that
+machine is off or unreachable. (This previously pointed at LM Studio; the
+wire format is unchanged, which is why nothing here had to move.)
 
 Checks run synchronously before every batch (no background polling thread —
 a batch is already the natural unit of work here, so there's no efficiency
@@ -13,27 +14,32 @@ case for a separate poller):
      for this batch.
   2. Model known to the server at all (``GET /api/v0/models``) — if not,
      fall back to local for this batch *without* treating the endpoint
-     itself as unhealthy; a healthy box can simply not have this particular
-     model downloaded.
+     itself as unhealthy; a healthy box can simply not serve this particular
+     model.
   3. Model actually loaded (``/api/v0/models``' ``state`` field) — if not,
-     request a load via the LM Studio native API
-     (``POST /api/v1/models/load``); if that fails, fall back to local for
-     this batch.
+     request a load (``POST /api/v1/models/load``); if that fails, fall back
+     to local for this batch.
 
 Only once all three pass does the batch actually get sent to
 ``POST /embeddings``. A failure there also falls back to local.
 
 Model-state note: the OpenAI-compatible ``GET /models`` list (on the
-``EMBED_REMOTE_URL`` client) enumerates every model LM Studio has
-*downloaded*, regardless of whether it's currently loaded into memory — it is
-NOT a reliable "is this usable right now" signal. ``GET /api/v0/models``
-(root-scoped, same base as the native load API) is used instead for
-availability/load-state, since it reports a real ``state`` field
-(``"loaded"`` / ``"not-loaded"``).
+``EMBED_REMOTE_URL`` client) enumerates every model the server *serves*,
+regardless of whether it's currently resident in VRAM — it is NOT a reliable
+"is this usable right now" signal. ``GET /api/v0/models`` (root-scoped, same
+base as the native load API) is used instead for availability/load-state,
+since it reports a real ``state`` field (``"loaded"`` / ``"not-loaded"``).
+
+Cold-start note: step 3 can be genuinely slow. The remote downloads weights on
+first use, so a load is a multi-gigabyte HTTP fetch plus a CUDA load, which is
+why ``EMBED_REMOTE_LOAD_TIMEOUT_S`` defaults to ten minutes and why this module
+logs when a load starts, not only when it finishes — a silent ten-minute block
+is indistinguishable from a hang.
 """
 from __future__ import annotations
 
 import logging
+import time
 from urllib.parse import urlparse
 
 import httpx
@@ -41,6 +47,10 @@ import httpx
 from event_driven_rag_service.handlers.embed_handler import EmbeddingModel
 
 logger = logging.getLogger(__name__)
+
+# Distinguishes "the server did not report a quantisation" from an explicit
+# null, which means full precision was applied.
+_NOT_REPORTED = object()
 
 
 class RemoteEmbeddingModel:
@@ -60,11 +70,13 @@ class RemoteEmbeddingModel:
         model_name: str,
         load_client: httpx.Client | None = None,
         health_path: str = "/models",
+        quantization: str | None = None,
     ) -> None:
         self._client = client
         self._name = model_name
         self._load_client = load_client
         self._health_path = health_path
+        self._quantization = quantization
 
     @property
     def name(self) -> str:
@@ -121,23 +133,89 @@ class RemoteEmbeddingModel:
         if entry.get("state") == "loaded":
             return True
 
+        payload: dict[str, object] = {"model": self._name}
+        if self._quantization:
+            # Advisory: the server has its own per-model default and applies this
+            # only if it can. Older servers ignore the field outright, which is
+            # why a mismatch is worth reporting but never worth failing over.
+            payload["quantization"] = self._quantization
+
+        timeout = getattr(self._load_client, "timeout", None)
+        budget = getattr(timeout, "read", None) or getattr(timeout, "connect", None)
+        logger.info(
+            "Remote model %r not loaded — requesting load (quantization=%s "
+            "timeout=%ss). First load of a model downloads its weights, so this "
+            "can take several minutes; embedding is blocked until it returns.",
+            self._name,
+            self._quantization or "server default",
+            f"{budget:.0f}" if isinstance(budget, (int, float)) else "unset",
+        )
+        started = time.monotonic()
         try:
-            logger.info(
-                "Remote model %r not loaded — requesting load via LM Studio API "
-                "(POST /api/v1/models/load)",
+            load_resp = self._load_client.post("/api/v1/models/load", json=payload)
+            load_resp.raise_for_status()
+        except httpx.TimeoutException:
+            # The server keeps loading after we give up, so this is very often
+            # transient: the next batch's pre-flight finds it already resident.
+            # Say so, or a first-run download reads as a hard failure.
+            logger.warning(
+                "Timed out after %.0fs waiting for remote model %r to load. The "
+                "server is most likely still loading it — the next batch should "
+                "find it ready. Raise EMBED_REMOTE_LOAD_TIMEOUT_S if this repeats.",
+                time.monotonic() - started,
                 self._name,
             )
-            load_resp = self._load_client.post(
-                "/api/v1/models/load", json={"model": self._name}
-            )
-            load_resp.raise_for_status()
-            logger.info("Remote model loaded successfully: %s", self._name)
-            return True
+            return False
         except Exception:
             logger.warning(
-                "Failed to load remote model %r", self._name, exc_info=True
+                "Failed to load remote model %r after %.1fs",
+                self._name,
+                time.monotonic() - started,
+                exc_info=True,
             )
             return False
+
+        elapsed = time.monotonic() - started
+        applied = self._reported_quantization(load_resp)
+        if applied is _NOT_REPORTED:
+            # An older or third-party server. Nothing to compare against, so
+            # report what we asked for rather than inventing a result.
+            summary = self._quantization or "server default"
+        else:
+            summary = applied or "full precision"
+            if self._quantization and applied != self._quantization:
+                logger.warning(
+                    "Remote model %r loaded at %s, but %s was requested — vectors "
+                    "are still usable, just not at the configured precision. The "
+                    "endpoint may lack CUDA or bitsandbytes.",
+                    self._name,
+                    summary,
+                    self._quantization,
+                )
+        logger.info(
+            "Remote model loaded: %s (quantization=%s elapsed=%.1fs)",
+            self._name,
+            summary,
+            elapsed,
+        )
+        return True
+
+    @staticmethod
+    def _reported_quantization(resp: httpx.Response) -> str | None | object:
+        """The quantisation the server says it actually applied.
+
+        Returns ``_NOT_REPORTED`` when the server didn't say, which is distinct
+        from an explicit ``null`` — the latter means "full precision", and
+        conflating the two would either swallow a real mismatch or invent one
+        against servers that never carried the field.
+        """
+        try:
+            body = resp.json()
+        except Exception:
+            return _NOT_REPORTED
+        if not isinstance(body, dict) or "quantization" not in body:
+            return _NOT_REPORTED
+        return body["quantization"]
 
     def encode(self, texts: list[str]) -> list[list[float]]:
         resp = self._client.post("/embeddings", json={"model": self._name, "input": texts})
@@ -236,17 +314,23 @@ def build_fallback_model(
     api_key: str,
     timeout_s: float,
     health_path: str = "/models",
-    load_timeout_s: float = 120.0,
+    load_timeout_s: float = 600.0,
+    quantization: str | None = None,
 ) -> FallbackEmbeddingModel:
     """Construct a FallbackEmbeddingModel.
 
     ``remote_model_name`` is the model id to send to the remote endpoint — this
-    can differ from ``local.name`` since e.g. LM Studio assigns its own slug
-    per loaded model rather than reusing the local HF/gguf name.
+    differs from ``local.name`` whenever the remote serves the model under its
+    own slug, or where the local leg is a differently-packaged build (a GGUF
+    file) of the same logical model.
 
-    ``load_timeout_s`` governs the LM Studio model-load call which can take
-    significantly longer than a regular inference request (model files need to
-    be read from disk and mapped into GPU memory).
+    ``quantization`` is forwarded on the model-load call so the server loads at
+    the precision this pipeline's config asks for, rather than only its own
+    per-model default. It is advisory — see ``ensure_model_loaded``.
+
+    ``load_timeout_s`` governs the model-load call only, and is deliberately far
+    larger than ``timeout_s``: a first load downloads weights from HuggingFace
+    before touching the GPU, so minutes is normal where a batch is seconds.
     """
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     client = httpx.Client(base_url=base_url, timeout=timeout_s, headers=headers)
@@ -255,7 +339,11 @@ def build_fallback_model(
     load_client = httpx.Client(base_url=root_url, timeout=load_timeout_s, headers=headers)
 
     remote = RemoteEmbeddingModel(
-        client, remote_model_name, load_client=load_client, health_path=health_path
+        client,
+        remote_model_name,
+        load_client=load_client,
+        health_path=health_path,
+        quantization=quantization,
     )
     endpoint_label = urlparse(base_url).netloc or base_url
     return FallbackEmbeddingModel(remote, local, endpoint_label)

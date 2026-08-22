@@ -16,6 +16,8 @@ Run with:
 """
 from __future__ import annotations
 
+from dataclasses import replace
+
 import os
 import time
 
@@ -73,7 +75,7 @@ def test_live_endpoint_is_reachable(live_client: httpx.Client):
 
 def test_live_endpoint_embeds_summary_title_with_qwen3_gguf(live_client: httpx.Client):
     """Verify LM Studio actually produces embeddings using the summary_title (Qwen3 gguf) model."""
-    remote_model_name = _SUMMARY_TITLE_CONFIG.remote_model or _SUMMARY_TITLE_CONFIG.model
+    remote_model_name = _SUMMARY_TITLE_CONFIG.remote_id
     remote = RemoteEmbeddingModel(live_client, remote_model_name)
 
     texts = [
@@ -99,25 +101,26 @@ def test_live_fallback_model_prefers_remote_and_never_touches_local():
     class _UnusedLocalModel:
         @property
         def name(self) -> str:
-            return _SUMMARY_TITLE_CONFIG.model
+            return _SUMMARY_TITLE_CONFIG.primary
 
         def encode(self, texts: list[str]) -> list[list[float]]:
             raise AssertionError("local model should not run while the remote endpoint is healthy")
 
     model = build_fallback_model(
         local=_UnusedLocalModel(),
-        remote_model_name=_SUMMARY_TITLE_CONFIG.remote_model or _SUMMARY_TITLE_CONFIG.model,
+        remote_model_name=_SUMMARY_TITLE_CONFIG.remote_id,
         base_url=_REMOTE_URL,
         api_key=os.getenv("EMBED_REMOTE_API_KEY", ""),
         timeout_s=30.0,
         health_path="/models",
+        quantization=_SUMMARY_TITLE_CONFIG.quantization,
     )
 
     vectors = model.encode(["Title: quick smoke check"])
 
     assert len(vectors) == 1
     assert len(vectors[0]) == _SUMMARY_TITLE_CONFIG.dim
-    assert model.name == _SUMMARY_TITLE_CONFIG.model
+    assert model.name == _SUMMARY_TITLE_CONFIG.primary
 
 
 def _is_model_loaded(load_client: httpx.Client, model_name: str) -> bool:
@@ -143,7 +146,7 @@ def test_live_program_can_load_the_needed_model(
     POST /api/v1/models/load if the model isn't loaded), rather than only
     asserting against whatever happens to already be resident.
     """
-    remote_model_name = _SUMMARY_TITLE_CONFIG.remote_model or _SUMMARY_TITLE_CONFIG.model
+    remote_model_name = _SUMMARY_TITLE_CONFIG.remote_id
     remote = RemoteEmbeddingModel(live_client, remote_model_name, load_client=load_client)
 
     # This is expected to trigger a model load if it isn't already loaded, and
@@ -171,7 +174,7 @@ def test_live_program_loads_model_when_not_already_loaded(
     box (or one that only has *some* models loaded) must still end up serving
     the request via an explicit ``POST /api/v1/models/load``, not fail silently.
     """
-    remote_model_name = _SUMMARY_TITLE_CONFIG.remote_model or _SUMMARY_TITLE_CONFIG.model
+    remote_model_name = _SUMMARY_TITLE_CONFIG.remote_id
 
     unload_resp = load_client.post(
         "/api/v1/models/unload", json={"instance_id": remote_model_name}
@@ -214,29 +217,33 @@ def test_live_gpu_entrypoint_only_routes_remote_for_models_with_remote_entry(mon
     """Regression test for the "some models present, some not" health-loop issue:
     the GPU entrypoint must only send a model through the remote endpoint when
     EMBED_CONFIGS declares an explicit `remote_model` for it. Models without one
-    (e.g. body/title's bge models) are not guaranteed to be loaded on the remote
-    box, and routing them there anyway means every encode() for them fails its
-    model-load check and its /embeddings call, on every single request.
+    are not guaranteed to be servable by the remote endpoint, and routing them
+    there anyway means every encode() for them fails its model-load check and
+    its /embeddings call, on every single request.
+
+    Every config is remote-eligible today, so the negative half flips
+    `allow_remote` on a copy rather than hunting for an entry that happens to
+    lack a `remote_model` — that used to be `body`, then `title`, and pinning
+    the test to whichever one currently qualifies made it fail whenever the
+    registry grew.
     """
     monkeypatch.setattr(settings, "embed_remote_url", _REMOTE_URL)
 
-    qwen_model = gpu_entrypoint._load_model(_SUMMARY_TITLE_CONFIG.model)
+    qwen_model = gpu_entrypoint._load_model(_SUMMARY_TITLE_CONFIG.primary)
     assert isinstance(qwen_model, FallbackEmbeddingModel)
 
     vectors = qwen_model.encode(["Title: entrypoint smoke check"])
     assert len(vectors[0]) == _SUMMARY_TITLE_CONFIG.dim
 
-    bge_body_config = EMBED_CONFIGS["body"]
-    assert bge_body_config.remote_model is None, (
-        "This test assumes the body config has no remote_model configured — "
-        "update the test if that changes"
-    )
+    local_only_config = replace(EMBED_CONFIGS["title"], allow_remote=False)
+    patched = dict(EMBED_CONFIGS)
+    patched["title"] = local_only_config
+    monkeypatch.setattr(gpu_entrypoint, "EMBED_CONFIGS", patched)
     # Mock the local leg so this stays a fast check of the remote-routing
     # decision, not a real (slow/network-dependent) SentenceTransformer load.
     monkeypatch.setenv("MOCK_EMBEDDINGS", "1")
-    bge_model = gpu_entrypoint._load_model(bge_body_config.model)
+    bge_model = gpu_entrypoint._load_model(local_only_config.primary)
     assert not isinstance(bge_model, FallbackEmbeddingModel), (
-        "A model with no `remote_model` entry must never be routed through the "
-        "remote endpoint, even when EMBED_REMOTE_URL is set — the remote server "
-        "isn't guaranteed to have it loaded"
+        "A model with allow_remote=False must never be routed through the "
+        "remote endpoint, even when EMBED_REMOTE_URL is set"
     )

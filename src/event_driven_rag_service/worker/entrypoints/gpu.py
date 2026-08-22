@@ -42,36 +42,74 @@ logger = logging.getLogger(__name__)
 # Model loader
 # ---------------------------------------------------------------------------
 
+def _config_for(model_name: str) -> Any:
+    """The EmbedConfig whose `primary` is *model_name*, or None.
+
+    Queues are registered from `cfg.primary`, so this is how a worker gets from
+    the name it consumes back to the config that describes it.
+    """
+    return next((c for c in EMBED_CONFIGS.values() if c.primary == model_name), None)
+
+
 def _load_model(model_name: str) -> Any:
     """Load an embedding model by name (blocking — runs in the main thread).
 
-    If EMBED_REMOTE_URL is configured *and* this model has an explicit
-    ``remote_model`` entry in EMBED_CONFIGS, the returned model tries that
-    endpoint first and falls back to the local model (below) when it's
-    unreachable. The local model is loaded lazily in that case — it may not
-    be a valid local/HF model at all (e.g. a gguf filename meant only for
-    the remote server), so it should only be touched if the remote endpoint
-    actually goes down.
+    Which legs are permitted is declared per model in EMBED_CONFIGS via
+    `allow_remote` / `allow_local`, giving four cases:
 
-    Models without a ``remote_model`` entry always load locally, even when
-    EMBED_REMOTE_URL is set — the remote server (e.g. LM Studio) is not
-    guaranteed to have every model loaded, and blindly routing every model
-    through it would fail the model-load/verify call and every /embeddings
-    request for models it doesn't have, on every single encode(). Opting in
-    per model via ``remote_model`` keeps that failure mode from happening.
+    - **both** (the default): the remote endpoint is tried first for every batch
+      and the local model is loaded lazily, only if the endpoint goes down.
+    - **remote only** (`allow_local=False`): this box genuinely cannot run the
+      model, so a failed remote batch raises rather than silently loading a
+      multi-gigabyte model onto a CPU and taking minutes per batch. Better a
+      visible failure and a retry than a queue that appears to be draining.
+    - **local only** (`allow_remote=False`): never routed off-box.
+    - **neither**: a config error — raised here at startup, not at first encode.
+
+    `allow_remote` is also implicitly off when EMBED_REMOTE_URL is unset.
     """
-    cfg = next((c for c in EMBED_CONFIGS.values() if c.model == model_name), None)
-    if settings.embed_remote_url and cfg and cfg.remote_model:
-        return build_fallback_model(
-            local=_LazyLocalModel(model_name),
-            remote_model_name=cfg.remote_model,
-            base_url=settings.embed_remote_url,
-            api_key=settings.embed_remote_api_key,
-            timeout_s=settings.embed_remote_timeout_s,
-            health_path=settings.embed_remote_health_path,
-            load_timeout_s=settings.embed_remote_load_timeout_s,
+    cfg = _config_for(model_name)
+    if cfg is None:
+        logger.warning(
+            "No EMBED_CONFIGS entry for %r — loading locally with defaults", model_name
         )
-    return _load_local_model(model_name)
+        return _load_local_model(model_name)
+
+    use_remote = bool(settings.embed_remote_url) and cfg.allow_remote
+
+    if not use_remote and not cfg.allow_local:
+        raise RuntimeError(
+            f"{model_name!r} has allow_local=False and no usable remote leg "
+            f"(allow_remote={cfg.allow_remote}, EMBED_REMOTE_URL="
+            f"{settings.embed_remote_url or '<unset>'!r}). Set EMBED_REMOTE_URL or "
+            f"allow_local=True in EMBED_CONFIGS."
+        )
+
+    if not use_remote:
+        return _load_local_model(model_name)
+
+    logger.info(
+        "Routing %r to remote embedder (remote_id=%s quantization=%s local_fallback=%s)",
+        model_name,
+        cfg.remote_id,
+        cfg.quantization or "none",
+        "enabled" if cfg.allow_local else "disabled",
+    )
+    local: Any = (
+        _LazyLocalModel(cfg)
+        if cfg.allow_local
+        else _NoLocalFallback(cfg.primary)
+    )
+    return build_fallback_model(
+        local=local,
+        remote_model_name=cfg.remote_id,
+        base_url=settings.embed_remote_url,
+        api_key=settings.embed_remote_api_key,
+        timeout_s=settings.embed_remote_timeout_s,
+        health_path=settings.embed_remote_health_path,
+        load_timeout_s=settings.embed_remote_load_timeout_s,
+        quantization=cfg.quantization,
+    )
 
 
 def _load_local_model(model_name: str) -> Any:
@@ -83,9 +121,9 @@ def _load_local_model(model_name: str) -> Any:
         logger.info("Using mock embedding model for %s", model_name)
         return _MockEmbeddingModel(model_name)
 
-    cfg = next((c for c in EMBED_CONFIGS.values() if c.model == model_name), None)
-    if cfg and cfg.local_repo_id:
-        return _load_gguf_model(cfg.local_repo_id, model_name)
+    cfg = _config_for(model_name)
+    if cfg is not None and cfg.gguf is not None:
+        return _load_gguf_model(cfg.gguf.repo_id, cfg.gguf.filename, model_name)
 
     try:
         from sentence_transformers import SentenceTransformer
@@ -110,12 +148,18 @@ def _load_local_model(model_name: str) -> Any:
         )
 
 
-def _load_gguf_model(repo_id: str, filename: str) -> Any:
+def _load_gguf_model(repo_id: str, filename: str, name: str | None = None) -> Any:
     """Load a GGUF embedding model via llama-cpp-python (blocking).
 
-    SentenceTransformer cannot load GGUF files, so models distributed only in
-    that format (e.g. Qwen3-Embedding) go through llama-cpp-python instead,
-    which downloads/caches the file from the HF repo the same way ST does.
+    SentenceTransformer cannot load GGUF files, so models distributed in that
+    format (e.g. Qwen3-Embedding) go through llama-cpp-python instead, which
+    downloads/caches the file from the HF repo the same way ST does. The
+    quantisation is baked into the file itself — see EmbedConfig.quantization.
+
+    ``name`` is what the returned model reports as its ``.name``, and defaults to
+    the GGUF filename. Callers pass the config's `primary` so that identity stays
+    the same whichever leg and whichever packaging served the batch — the file
+    it came from is already in the load log below.
     """
     try:
         from llama_cpp import Llama
@@ -132,7 +176,7 @@ def _load_gguf_model(repo_id: str, filename: str) -> Any:
         load_time = time.time() - load_start
         record_model_load_time(load_time, filename)
         logger.info("GGUF model loaded: %s (load_time=%.2fs)", filename, load_time)
-        return _LlamaCppEmbeddingModel(llama_model, filename)
+        return _LlamaCppEmbeddingModel(llama_model, name or filename)
     except ImportError:
         logger.warning(
             "llama-cpp-python not available — falling back to mock. "
@@ -145,25 +189,49 @@ class _LazyLocalModel:
 
     Used as the fallback leg of ``FallbackEmbeddingModel`` when a remote
     endpoint is configured — the local model should only be loaded if the
-    remote endpoint actually goes down, since ``model_name`` may not even be
-    a loadable local/HF model (e.g. a gguf filename meant only for the
-    remote server).
+    remote endpoint actually goes down, since the local leg can be a completely
+    different artifact (a GGUF build via llama-cpp) that costs disk, VRAM and
+    minutes to bring up.
     """
 
-    def __init__(self, model_name: str) -> None:
-        self._model_name = model_name
+    def __init__(self, cfg: Any) -> None:
+        self._cfg = cfg
         self._model: Any | None = None
         self._lock = threading.Lock()
 
     @property
     def name(self) -> str:
-        return self._model_name
+        return self._cfg.primary
 
     def encode(self, texts: list[str]) -> list[list[float]]:
         with self._lock:
             if self._model is None:
-                self._model = _load_local_model(self._model_name)
+                self._model = _load_local_model(self._cfg.primary)
         return self._model.encode(texts)
+
+
+class _NoLocalFallback:
+    """Stand-in local leg for models marked ``allow_local=False``.
+
+    ``FallbackEmbeddingModel`` always wants a local leg, so this supplies one
+    that refuses. Raising here surfaces as a nacked task that RabbitMQ will
+    redeliver once the endpoint is back — which is the behaviour we want for a
+    model the local box was never going to be able to run.
+    """
+
+    def __init__(self, name: str) -> None:
+        self._name = name
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def encode(self, texts: list[str]) -> list[list[float]]:
+        raise RuntimeError(
+            f"Remote embedding unavailable for {self._name!r} and local embedding is "
+            f"disabled for it (allow_local=False in EMBED_CONFIGS). Bring the remote "
+            f"embedder back up, or allow local embedding for this model."
+        )
 
 
 class _RealEmbeddingModel:
@@ -204,7 +272,7 @@ class _MockEmbeddingModel:
     def __init__(self, name: str) -> None:
         self._name = name
         config = next(
-            (c for c in EMBED_CONFIGS.values() if c.model == name),
+            (c for c in EMBED_CONFIGS.values() if c.primary == name),
             None,
         )
         self._dim = config.dim if config else 768
@@ -289,7 +357,7 @@ def main() -> None:
     # Priority-ordered model queues: index 0 = highest priority.
     # Query embeddings (search latency-sensitive) before bulk chunk embeddings.
     model_queues = [
-        (cfg.model, cfg.queue)
+        (cfg.primary, cfg.queue)
         for cfg in EMBED_CONFIGS.values()
     ]
     # Deduplicate while preserving order (query first if present).
@@ -299,6 +367,12 @@ def main() -> None:
         if pair[1] not in seen:
             seen.add(pair[1])
             unique_queues.append(pair)
+
+    model_max_batch = {
+        cfg.primary: cfg.max_batch
+        for cfg in EMBED_CONFIGS.values()
+        if cfg.max_batch is not None
+    }
 
     # chunk_fetcher still uses ChunkRepository directly (reads chunk texts)
     from event_driven_rag_service.repository.chunk_repository import ChunkRepository as _CR
@@ -316,6 +390,7 @@ def main() -> None:
         model_loader=_load_model,
         handler=embed_handler,
         loop=loop,
+        model_max_batch=model_max_batch,
     )
     logger.info("GpuEmbedWorker instantiated — queues: %s", unique_queues)
 

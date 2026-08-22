@@ -106,7 +106,7 @@ async def create_search(req: SearchRequest, request: Request) -> SearchJobRespon
 
         embed_cfg = EMBED_CONFIGS[req.chunk_type]
         posts_table = f"posts_{req.library_id}"
-        chunks_table = build_chunk_table_name(posts_table, req.chunk_type, embed_cfg.model)
+        chunks_table = build_chunk_table_name(posts_table, req.chunk_type, embed_cfg.primary)
 
         chunk_repo = ChunkRepository(request.app.state.pool)
         if not await chunk_repo.table_exists(chunks_table):
@@ -122,7 +122,7 @@ async def create_search(req: SearchRequest, request: Request) -> SearchJobRespon
             job_id = await job_repo.create_job(
                 query=req.query,
                 k=req.k,
-                embedding_profile=embed_cfg.model,
+                embedding_profile=embed_cfg.primary,
                 chunks_table=chunks_table,
                 library_id=req.library_id,
             )
@@ -133,7 +133,7 @@ async def create_search(req: SearchRequest, request: Request) -> SearchJobRespon
         event = SearchJobCreatedEvent(
             query_job_id=job_id,
             query=req.query,
-            embedding_profile=embed_cfg.model,
+            embedding_profile=embed_cfg.primary,
             trace_id=trace_id,
             parent_span_id=parent_span_id,
         )

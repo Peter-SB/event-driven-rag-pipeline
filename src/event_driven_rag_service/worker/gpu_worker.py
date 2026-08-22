@@ -69,7 +69,11 @@ class GpuEmbedWorker(BaseWorker):
     handler         : EmbedHandler with injected DB / event-bus dependencies
     loop            : asyncio event loop that owns the DB pool;
                       a new loop is created if not provided
-    max_batch       : max messages collected per queue poll
+    max_batch       : max messages collected per queue poll, used for any model
+                      not overridden in `model_max_batch`
+    model_max_batch : optional per-model override of `max_batch`, keyed by
+                      model name (EmbedConfig.primary). Needed when one model's
+                      VRAM footprint can't sustain the worker-wide default.
     idle_timeout_s  : seconds idle before the model is unloaded
     idle_sleep_s    : sleep duration between empty-queue polls
     """
@@ -82,6 +86,7 @@ class GpuEmbedWorker(BaseWorker):
         handler: EmbedHandler,
         loop: asyncio.AbstractEventLoop | None = None,
         max_batch: int = 32,
+        model_max_batch: dict[str, int] | None = None,
         idle_timeout_s: float = 300.0,
         idle_sleep_s: float = 1.0,
     ) -> None:
@@ -92,7 +97,11 @@ class GpuEmbedWorker(BaseWorker):
         # (which can take several minutes). Without this, RabbitMQ closes the
         # connection mid-batch, causing unacknowledged messages to be requeued
         # and the same batch to be processed repeatedly.
-        super().__init__(rabbitmq_url, queue_name="", prefetch=max_batch, heartbeat=1000)
+        self._model_max_batch = model_max_batch or {}
+        # QoS prefetch must cover the largest poll size across all models, or a
+        # model with a higher-than-default max_batch would be starved.
+        prefetch = max([max_batch, *self._model_max_batch.values()])
+        super().__init__(rabbitmq_url, queue_name="", prefetch=prefetch, heartbeat=1000)
         self._model_queues = model_queues
         self._load_model = model_loader
         self._handler = handler
@@ -136,7 +145,8 @@ class GpuEmbedWorker(BaseWorker):
                 if not self._running:
                     break
 
-                raw = self._poll_queue(channel, queue_name, self._max_batch)
+                poll_size = self._model_max_batch.get(model_name, self._max_batch)
+                raw = self._poll_queue(channel, queue_name, poll_size)
                 if not raw:
                     continue
 

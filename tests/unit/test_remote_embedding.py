@@ -18,6 +18,8 @@ Tested behaviours
 """
 from __future__ import annotations
 
+import json
+import logging
 import httpx
 import pytest
 
@@ -271,3 +273,106 @@ def test_build_fallback_model_wires_remote():
     vectors = model.encode(["hello"])
     assert vectors == [[0.0, 0.0]]
     assert local.encode_calls == [["hello"]]
+
+
+# --- quantisation on the load call ------------------------------------------
+
+
+def test_load_request_carries_the_configured_quantization():
+    """Precision is declared once, in EmbedConfig, and travels with the load
+    request — otherwise the two sides decide independently and can disagree
+    without anything noticing."""
+    load_calls: list = []
+    load_client = _load_client(_model_state_handler("not-loaded", load_calls))
+    remote = RemoteEmbeddingModel(
+        _client(lambda r: httpx.Response(200, json={"data": []})),
+        "some-model",
+        load_client=load_client,
+        quantization="int8",
+    )
+
+    assert remote.ensure_model_loaded() is True
+    assert len(load_calls) == 1
+    assert json.loads(load_calls[0].content) == {
+        "model": "some-model",
+        "quantization": "int8",
+    }
+
+
+def test_load_request_omits_quantization_when_unset():
+    """A model with no declared precision must send the bare payload, leaving
+    the server's own per-model default in charge."""
+    load_calls: list = []
+    load_client = _load_client(_model_state_handler("not-loaded", load_calls))
+    remote = RemoteEmbeddingModel(
+        _client(lambda r: httpx.Response(200, json={"data": []})),
+        "some-model",
+        load_client=load_client,
+    )
+
+    assert remote.ensure_model_loaded() is True
+    assert json.loads(load_calls[0].content) == {"model": "some-model"}
+
+
+def test_quantization_mismatch_warns_but_still_loads(caplog):
+    """The server may not be able to honour the request (no CUDA, bitsandbytes
+    missing). Vectors are still usable, so this is a warning, not a failure."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v0/models":
+            return httpx.Response(
+                200, json={"data": [{"id": "some-model", "state": "not-loaded"}]}
+            )
+        return httpx.Response(
+            200, json={"model": "some-model", "state": "loaded", "quantization": None}
+        )
+
+    remote = RemoteEmbeddingModel(
+        _client(lambda r: httpx.Response(200, json={"data": []})),
+        "some-model",
+        load_client=_load_client(handler),
+        quantization="int8",
+    )
+
+    with caplog.at_level(logging.WARNING):
+        assert remote.ensure_model_loaded() is True
+
+    assert any("int8" in r.message for r in caplog.records)
+
+
+def test_load_timeout_is_reported_as_probably_still_loading(caplog):
+    """A first load downloads weights, so timing out is usually the client
+    giving up on work the server is still doing — the next batch normally finds
+    the model resident. Logging it as a flat failure would send people hunting
+    for a fault that isn't there."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v0/models":
+            return httpx.Response(
+                200, json={"data": [{"id": "some-model", "state": "not-loaded"}]}
+            )
+        raise httpx.ReadTimeout("too slow", request=request)
+
+    remote = RemoteEmbeddingModel(
+        _client(lambda r: httpx.Response(200, json={"data": []})),
+        "some-model",
+        load_client=_load_client(handler),
+    )
+
+    with caplog.at_level(logging.WARNING):
+        assert remote.ensure_model_loaded() is False
+
+    assert any("still loading" in r.message for r in caplog.records)
+    assert any("EMBED_REMOTE_LOAD_TIMEOUT_S" in r.message for r in caplog.records)
+
+
+def test_build_fallback_model_threads_quantization_through():
+    model = build_fallback_model(
+        local=FakeLocalModel(),
+        remote_model_name="some-model",
+        base_url="http://gaming-pc:8100/v1",
+        api_key="",
+        timeout_s=1.0,
+        quantization="int8",
+    )
+    assert model._remote._quantization == "int8"

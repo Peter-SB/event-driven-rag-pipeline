@@ -155,7 +155,7 @@ async def test_full_embed_pipeline_chunks_created_to_embedding_completed(clean_p
     channel = await rmq_conn.channel()
     embed_cfg = EMBED_CONFIGS["body"]
     exchange = await channel.declare_exchange("embedding", aio_pika.ExchangeType.TOPIC, durable=True)
-    routing_key = f"gpu.embed.{embed_cfg.model}"
+    routing_key = f"gpu.embed.{embed_cfg.primary}"
     queue = await channel.declare_queue(routing_key, exclusive=True, auto_delete=True)
     await queue.bind(exchange, routing_key=routing_key)
 
@@ -272,7 +272,7 @@ async def test_embed_task_fields_match_chunks_created_event(clean_pipeline_table
     channel = await rmq_conn.channel()
     embed_cfg = EMBED_CONFIGS["body"]
     exchange = await channel.declare_exchange("embedding", aio_pika.ExchangeType.TOPIC, durable=True)
-    routing_key = f"gpu.embed.{embed_cfg.model}"
+    routing_key = f"gpu.embed.{embed_cfg.primary}"
     queue = await channel.declare_queue(routing_key, exclusive=True, auto_delete=True)
     await queue.bind(exchange, routing_key=routing_key)
 
@@ -297,8 +297,8 @@ async def test_embed_task_fields_match_chunks_created_event(clean_pipeline_table
         f"EmbedTask.chunk_ids should equal the event's chunk_ids. "
         f"Expected {sorted(fake_chunk_ids)}, got {sorted(task.chunk_ids)}"
     )
-    assert task.model_name == embed_cfg.model, (
-        f"EmbedTask.model_name should be {embed_cfg.model!r} (from EMBED_CONFIGS['body']), "
+    assert task.model_name == embed_cfg.primary, (
+        f"EmbedTask.model_name should be {embed_cfg.primary!r} (from EMBED_CONFIGS['body']), "
         f"got {task.model_name!r}"
     )
     assert task.task_type == "chunk", (
@@ -420,7 +420,7 @@ async def test_consumer_offset_advances_after_chunk_dispatcher_runs(clean_pipeli
     channel = await rmq_conn.channel()
     embed_cfg = EMBED_CONFIGS["body"]
     exchange = await channel.declare_exchange("embedding", aio_pika.ExchangeType.TOPIC, durable=True)
-    routing_key = f"gpu.embed.{embed_cfg.model}"
+    routing_key = f"gpu.embed.{embed_cfg.primary}"
     queue = await channel.declare_queue(routing_key, exclusive=True, auto_delete=True)
     await queue.bind(exchange, routing_key=routing_key)
 

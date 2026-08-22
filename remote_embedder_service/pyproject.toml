@@ -1,0 +1,56 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "remote-embedder"
+version = "0.1.0"
+description = "Slim CUDA embedding service exposing an LM Studio-compatible API"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "pydantic>=2.6",
+    "python-dotenv>=1.0",
+    # Model stack. torch is intentionally unpinned here — install the CUDA build
+    # for your driver first (see README), then `pip install -e .` on top; this
+    # constraint accepts whichever build (+cpu, +cu121, +cu124, ...) is already
+    # installed rather than pulling the default CPU wheel over it.
+    "torch>=2.2",
+    "transformers>=4.40",
+    "sentence-transformers>=3.0",
+    # device_map="auto" placement for the quantised load path in manager.py.
+    "accelerate>=0.30",
+    "huggingface-hub>=0.23",
+    # int8 path (manager.py's default_loader). CUDA-only at runtime, but the
+    # package itself installs fine on any platform (Windows wheels landed in
+    # 0.43+) — the service falls back to full precision automatically if a
+    # quantised load fails (e.g. running on CPU), so there's no reason to make
+    # this optional and risk a dev/CI install missing it silently.
+    "bitsandbytes>=0.43",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "httpx>=0.27",
+]
+
+[project.scripts]
+remote-embedder = "remote_embedder.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/remote_embedder"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-ra --tb=short -m 'not gpu'"
+markers = [
+    "e2e: downloads and runs a real (small) model on CPU; no GPU required",
+    "gpu: requires a real CUDA device; deselected by default",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

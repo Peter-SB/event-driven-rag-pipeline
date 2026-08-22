@@ -67,7 +67,7 @@ async def test_embed_task_uses_body_model_for_body_task_type(fake_bus, fake_exch
     await _dispatcher(fake_bus)._dispatch_embedding(fake_exchange, event)
 
     task = _published_embed_tasks(fake_exchange)[0]
-    assert task.model_name == EMBED_CONFIGS["body"].model
+    assert task.model_name == EMBED_CONFIGS["body"].primary
 
 
 @pytest.mark.asyncio
@@ -77,7 +77,7 @@ async def test_embed_task_uses_correct_model_for_summary_title(fake_bus, fake_ex
     await _dispatcher(fake_bus)._dispatch_embedding(fake_exchange, event)
 
     task = _published_embed_tasks(fake_exchange)[0]
-    assert task.model_name == EMBED_CONFIGS["summary_title"].model
+    assert task.model_name == EMBED_CONFIGS["summary_title"].primary
 
 
 @pytest.mark.asyncio
@@ -87,7 +87,7 @@ async def test_embed_task_uses_correct_model_for_title(fake_bus, fake_exchange):
     await _dispatcher(fake_bus)._dispatch_embedding(fake_exchange, event)
 
     task = _published_embed_tasks(fake_exchange)[0]
-    assert task.model_name == EMBED_CONFIGS["title"].model
+    assert task.model_name == EMBED_CONFIGS["title"].primary
     assert task.model_name == "BAAI/bge-small-en-v1.5"
 
 
@@ -140,8 +140,12 @@ async def test_routing_key_matches_bound_queue_for_every_task_type(fake_bus, fak
 
 
 @pytest.mark.asyncio
-async def test_summary_title_and_analysis_share_the_same_queue(fake_bus, fake_exchange):
-    """Two task_types with different models can be routed to one shared GPU queue."""
+async def test_analysis_and_summary_title_route_to_their_own_models_queue(fake_bus, fake_exchange):
+    """Two task_types can each be routed to their own configured model's queue.
+
+    summary_title uses Qwen3-Embedding-4B (large-context summaries); analysis
+    still uses the smaller Qwen3-Embedding-0.6B — they no longer share a queue.
+    """
     summary_event = make_chunks_created_event(post_id=101, task_type="summary_title")
     analysis_event = make_chunks_created_event(post_id=102, task_type="analysis")
 
@@ -149,7 +153,7 @@ async def test_summary_title_and_analysis_share_the_same_queue(fake_bus, fake_ex
     await dispatcher._dispatch_embedding(fake_exchange, summary_event)
     await dispatcher._dispatch_embedding(fake_exchange, analysis_event)
 
-    assert fake_exchange.all_routing_keys == ["gpu.embed.qwen3-0.6b", "gpu.embed.qwen3-0.6b"]
+    assert fake_exchange.all_routing_keys == ["gpu.embed.qwen3-4b", "gpu.embed.qwen3-0.6b"]
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +168,7 @@ async def test_unknown_task_type_falls_back_to_body_config(fake_bus, fake_exchan
     await _dispatcher(fake_bus)._dispatch_embedding(fake_exchange, event)
 
     task = _published_embed_tasks(fake_exchange)[0]
-    assert task.model_name == EMBED_CONFIGS["body"].model
+    assert task.model_name == EMBED_CONFIGS["body"].primary
 
 
 # ---------------------------------------------------------------------------

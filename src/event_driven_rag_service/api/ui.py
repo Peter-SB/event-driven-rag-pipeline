@@ -64,7 +64,7 @@ async def submit_search(
     event_bus = request.app.state.event_bus
 
     embed_cfg = EMBED_CONFIGS[chunk_type]
-    chunks_table = build_chunk_table_name(f"posts_{library_id}", chunk_type, embed_cfg.model)
+    chunks_table = build_chunk_table_name(f"posts_{library_id}", chunk_type, embed_cfg.primary)
 
     chunk_repo = ChunkRepository(request.app.state.pool)
     if not await chunk_repo.table_exists(chunks_table):
@@ -77,12 +77,12 @@ async def submit_search(
     job_id = await job_repo.create_job(
         query=query,
         k=k,
-        embedding_profile=embed_cfg.model,
+        embedding_profile=embed_cfg.primary,
         chunks_table=chunks_table,
         library_id=library_id,
     )
 
-    event = SearchJobCreatedEvent(query_job_id=job_id, query=query, embedding_profile=embed_cfg.model)
+    event = SearchJobCreatedEvent(query_job_id=job_id, query=query, embedding_profile=embed_cfg.primary)
     await event_bus.publish(event.event_type, event.to_dict())
 
     logger.info("ui: created search job %s query=%r library=%s", job_id, query, library_id)

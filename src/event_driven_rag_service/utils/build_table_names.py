@@ -91,7 +91,7 @@ def build_chunk_table_suffix_map(
 
     configs = embed_configs if embed_configs is not None else _DEFAULT
     return {
-        f"{task_type}_{sanitize_model_name(cfg.model)}": (task_type, cfg)
+        f"{task_type}_{sanitize_model_name(cfg.primary)}": (task_type, cfg)
         for task_type, cfg in configs.items()
     }
 

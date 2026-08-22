@@ -162,7 +162,7 @@ class RequeueService:
                 table_name,
                 len(unembedded),
                 tasks_published,
-                embed_cfg.model,
+                embed_cfg.primary,
                 embed_cfg.queue,
             )
 
@@ -201,7 +201,7 @@ class RequeueService:
         for post_id, chunk_ids in by_post.items():
             task = EmbedTask(
                 task_type="chunk",
-                model_name=embed_cfg.model,  # type: ignore[attr-defined]
+                model_name=embed_cfg.primary,  # type: ignore[attr-defined]
                 post_id=post_id,
                 post_table=post_table,
                 chunk_ids=chunk_ids,

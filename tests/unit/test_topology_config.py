@@ -42,7 +42,7 @@ def test_verify_embedding_topology_passes_for_current_config():
 def test_verify_embedding_topology_raises_when_a_configured_queue_is_undeclared():
     stale_configs = dict(EMBED_CONFIGS)
     stale_configs["summary_title"] = EmbedConfig(
-        model="some-new-model", queue="gpu.embed.some-new-model-queue", dim=1024
+        primary="some-new-model", queue="gpu.embed.some-new-model-queue", dim=1024
     )
     with patch(
         "event_driven_rag_service.infrastructure.task_queue.EMBED_CONFIGS", stale_configs

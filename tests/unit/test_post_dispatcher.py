@@ -226,7 +226,7 @@ async def test_title_task_uses_bge_small_model(fake_bus, fake_exchange):
     tasks = _published_tasks(fake_exchange)
     title_task = next((t for t in tasks if t.task_type == "title"), None)
     assert title_task is not None
-    assert title_task.embed_model == EMBED_CONFIGS["title"].model
+    assert title_task.embed_model == EMBED_CONFIGS["title"].primary
     assert title_task.embed_model == "BAAI/bge-small-en-v1.5"
 
 
@@ -244,7 +244,7 @@ async def test_published_body_task_has_correct_embed_model(fake_bus, fake_exchan
 
     tasks = _published_tasks(fake_exchange)
     body_task = next(t for t in tasks if t.task_type == "body")
-    assert body_task.embed_model == EMBED_CONFIGS["body"].model
+    assert body_task.embed_model == EMBED_CONFIGS["body"].primary
 
 
 @pytest.mark.asyncio

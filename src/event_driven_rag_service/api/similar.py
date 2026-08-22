@@ -83,7 +83,7 @@ async def find_similar(req: SimilarRequest, request: Request) -> SimilarResponse
 
         embed_cfg = EMBED_CONFIGS[req.chunk_type]
         posts_table = f"posts_{req.library_id}"
-        chunks_table = build_chunk_table_name(posts_table, req.chunk_type, embed_cfg.model)
+        chunks_table = build_chunk_table_name(posts_table, req.chunk_type, embed_cfg.primary)
 
         try:
             embeddings = await chunk_repo.get_post_embeddings(req.post_id, chunks_table)

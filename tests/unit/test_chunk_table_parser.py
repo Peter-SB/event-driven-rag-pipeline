@@ -35,7 +35,7 @@ def test_suffix_map_values_are_task_type_and_cfg():
 
 def test_suffix_map_uses_custom_embed_configs():
     custom = {
-        "my_type": EmbedConfig(model="my-model-v1.0", queue="gpu.embed.my", dim=128),
+        "my_type": EmbedConfig(primary="my-model-v1.0", queue="gpu.embed.my", dim=128),
     }
     suffix_map = build_chunk_table_suffix_map(custom)
     assert "my_type_my_model_v1_0" in suffix_map
@@ -55,7 +55,7 @@ def test_suffix_map_defaults_to_embed_configs_when_none_given():
 def test_round_trip_all_task_types(task_type: str):
     """Every EMBED_CONFIGS entry round-trips through build + parse."""
     cfg = EMBED_CONFIGS[task_type]
-    table = build_chunk_table_name("posts_main", task_type, cfg.model)
+    table = build_chunk_table_name("posts_main", task_type, cfg.primary)
     suffix_map = build_chunk_table_suffix_map(EMBED_CONFIGS)
 
     result = parse_chunk_table_name(table, suffix_map)
@@ -70,7 +70,7 @@ def test_round_trip_all_task_types(task_type: str):
 def test_round_trip_library_with_underscore():
     """Library IDs containing underscores parse correctly."""
     cfg = EMBED_CONFIGS["body"]
-    table = build_chunk_table_name("posts_my_lib", "body", cfg.model)
+    table = build_chunk_table_name("posts_my_lib", "body", cfg.primary)
     suffix_map = build_chunk_table_suffix_map(EMBED_CONFIGS)
 
     result = parse_chunk_table_name(table, suffix_map)
