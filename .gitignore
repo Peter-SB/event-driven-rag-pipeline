@@ -6,3 +6,5 @@ docs/notes/
 
 *.env
 *.db*
+
+logs/
