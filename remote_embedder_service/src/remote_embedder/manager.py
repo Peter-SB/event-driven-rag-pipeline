@@ -24,6 +24,12 @@ from remote_embedder.registry import ModelSpec, get_spec
 
 logger = logging.getLogger(__name__)
 
+# bitsandbytes casts bf16 activations to fp16 for its int8 matmul kernel, which
+# has no fp16-native path — expected behaviour on this project's bf16-loaded
+# models, not a sign of a numerics problem, so it's not worth surfacing at
+# WARNING level on every batch.
+logging.getLogger("bitsandbytes").setLevel(logging.ERROR)
+
 STATE_LOADED = "loaded"
 STATE_NOT_LOADED = "not-loaded"
 
@@ -329,6 +335,7 @@ class ModelManager:
         if not texts:
             return []
 
+        started = self._clock()
         with self._lock:
             if self._model_id != model_id:
                 self.load(model_id)
@@ -348,6 +355,10 @@ class ModelManager:
                 vectors.extend(_to_lists(raw))
 
             self._touch()
+
+        logger.info(
+            "Embedded with model %s. Took %.2fs", model_id, self._clock() - started
+        )
 
         if len(vectors) != len(texts):
             raise ModelLoadError(

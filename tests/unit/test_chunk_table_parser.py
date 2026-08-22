@@ -98,3 +98,22 @@ def test_returns_none_for_unknown_suffix():
 def test_returns_none_for_empty_string():
     suffix_map = build_chunk_table_suffix_map(EMBED_CONFIGS)
     assert parse_chunk_table_name("", suffix_map) is None
+
+
+def test_round_trip_when_full_name_exceeds_identifier_limit():
+    """A long model name can push the *suffix* itself past the 63-char cutoff,
+    truncating it below what's in suffix_map. Parsing must still match by
+    reconstructing the same truncation, not by exact suffix equality."""
+    cfg = EMBED_CONFIGS["summary_title"]  # Qwen/Qwen3-Embedding-4B
+    post_table = "posts_reddit_posts_main"
+    table = build_chunk_table_name(post_table, "summary_title", cfg.primary)
+    assert len(table) == 63  # sanity: this case actually exercises truncation
+
+    suffix_map = build_chunk_table_suffix_map(EMBED_CONFIGS)
+    result = parse_chunk_table_name(table, suffix_map)
+
+    assert result is not None
+    parsed_post_table, parsed_type, parsed_cfg = result
+    assert parsed_post_table == post_table
+    assert parsed_type == "summary_title"
+    assert parsed_cfg is cfg

@@ -232,9 +232,11 @@ class GpuEmbedWorker(BaseWorker):
             return
         self._unload_model()
         logger.info("Loading embedding model: %s", model_name)
+        load_start = time.time()
         self._model = self._load_model(model_name)
+        load_time = time.time() - load_start
         self._current_model_name = model_name
-        logger.info("Model ready: %s", model_name)
+        logger.info("Model ready: %s (load_time=%.2fs)", model_name, load_time)
 
     def _unload_model(self) -> None:
         if self._model is None:

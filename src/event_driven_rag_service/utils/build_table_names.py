@@ -105,6 +105,16 @@ def parse_chunk_table_name(
     Returns ``None`` if the table name doesn't match any entry in *suffix_map*
     (e.g. hand-created tables or stale tables from a removed config entry).
 
+    Matching reconstructs each candidate full name (``post_table + "_chunks_"
+    + suffix``) and re-applies :func:`_truncate_identifier`, rather than
+    comparing the raw suffix directly. That's required because
+    ``build_chunk_table_name`` truncates the *whole* name to Postgres's
+    63-char identifier limit at creation time — a long model name (e.g.
+    ``Qwen/Qwen3-Embedding-4B``) can push the suffix itself past the cutoff,
+    so the suffix actually stored on disk is a truncated prefix of the one in
+    *suffix_map*. Comparing untruncated suffixes would never match those
+    tables and silently treat them as unrecognised.
+
     Args:
         table_name: A raw table name, e.g. ``posts_main_chunks_body_baai_bge_base_en_v1_5``.
         suffix_map: A map built by :func:`build_chunk_table_suffix_map`.
@@ -118,14 +128,13 @@ def parse_chunk_table_name(
         return None
 
     post_table = table_name[:idx]
-    suffix = table_name[idx + len(marker):]
 
-    match = suffix_map.get(suffix)
-    if match is None:
-        return None
+    for suffix, (task_type, embed_cfg) in suffix_map.items():
+        candidate = _truncate_identifier(f"{post_table}{marker}{suffix}")
+        if candidate == table_name:
+            return post_table, task_type, embed_cfg
 
-    task_type, embed_cfg = match
-    return post_table, task_type, embed_cfg
+    return None
 
 
 def build_search_job_table_name(post_table: str, task_type: str, model: str) -> str:
