@@ -14,6 +14,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from event_driven_rag_service.api.maintenance import router as maintenance_router
+from event_driven_rag_service.services.chunk_backfill_service import ChunkBackfillResult
 from event_driven_rag_service.services.requeue_service import RequeueResult
 
 
@@ -107,3 +108,78 @@ def test_zero_counts_on_empty_database(client, monkeypatch):
     assert body["tasks_published"] == 0
     assert body["tables_scanned"] == 0
     assert body["tables_skipped"] == 0
+
+
+# ---------------------------------------------------------------------------
+# POST /maintenance/requeue-missing-chunks
+# ---------------------------------------------------------------------------
+
+def _make_chunk_result(**kwargs) -> ChunkBackfillResult:
+    defaults = dict(posts_scanned=0, tasks_published=0, tables_scanned=0)
+    defaults.update(kwargs)
+    return ChunkBackfillResult(**defaults)
+
+
+def test_requeue_missing_chunks_returns_200_with_expected_fields(client, monkeypatch):
+    monkeypatch.setattr(
+        "event_driven_rag_service.api.maintenance.ChunkBackfillService.requeue_missing_chunks",
+        AsyncMock(return_value=_make_chunk_result(posts_scanned=5, tasks_published=5, tables_scanned=1)),
+    )
+    monkeypatch.setattr(
+        "event_driven_rag_service.api.maintenance.RequeueService.requeue_missing_embeddings",
+        AsyncMock(return_value=_make_result(requeued_chunks=2, tasks_published=1, tables_scanned=2)),
+    )
+
+    resp = client.post("/maintenance/requeue-missing-chunks")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert set(body.keys()) == {
+        "posts_scanned",
+        "chunk_tasks_published",
+        "post_tables_scanned",
+        "requeued_chunks",
+        "embed_tasks_published",
+        "chunk_tables_scanned",
+        "chunk_tables_skipped",
+    }
+
+
+def test_requeue_missing_chunks_combines_both_service_results(client, monkeypatch):
+    monkeypatch.setattr(
+        "event_driven_rag_service.api.maintenance.ChunkBackfillService.requeue_missing_chunks",
+        AsyncMock(return_value=_make_chunk_result(posts_scanned=10, tasks_published=8, tables_scanned=2)),
+    )
+    monkeypatch.setattr(
+        "event_driven_rag_service.api.maintenance.RequeueService.requeue_missing_embeddings",
+        AsyncMock(
+            return_value=_make_result(
+                requeued_chunks=4, tasks_published=3, tables_scanned=3, tables_skipped=1
+            )
+        ),
+    )
+
+    body = client.post("/maintenance/requeue-missing-chunks").json()
+
+    assert body["posts_scanned"] == 10
+    assert body["chunk_tasks_published"] == 8
+    assert body["post_tables_scanned"] == 2
+    assert body["requeued_chunks"] == 4
+    assert body["embed_tasks_published"] == 3
+    assert body["chunk_tables_scanned"] == 3
+    assert body["chunk_tables_skipped"] == 1
+
+
+def test_requeue_missing_chunks_zero_counts_on_empty_database(client, monkeypatch):
+    monkeypatch.setattr(
+        "event_driven_rag_service.api.maintenance.ChunkBackfillService.requeue_missing_chunks",
+        AsyncMock(return_value=_make_chunk_result()),
+    )
+    monkeypatch.setattr(
+        "event_driven_rag_service.api.maintenance.RequeueService.requeue_missing_embeddings",
+        AsyncMock(return_value=_make_result()),
+    )
+
+    body = client.post("/maintenance/requeue-missing-chunks").json()
+
+    assert all(v == 0 for v in body.values())

@@ -63,3 +63,39 @@ class MaintenanceRepository:
                 f"SELECT id, post_id FROM {table_name} WHERE embedding IS NULL"  # noqa: S608
             )
         return [(str(row["id"]), row["post_id"]) for row in rows]
+
+    async def list_post_tables(self) -> list[str]:
+        """Return the names of all post tables (one per library) in the public schema.
+
+        Post tables match ``posts_%`` but chunk tables also share that prefix
+        (``posts_{library}_chunks_{type}_{model}``), so those are explicitly
+        excluded here.
+        """
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                r"""
+                SELECT table_name
+                FROM information_schema.tables
+                WHERE table_schema = 'public'
+                  AND table_name LIKE 'posts\_%' ESCAPE '\'
+                  AND table_name NOT LIKE '%\_chunks\_%' ESCAPE '\'
+                ORDER BY table_name
+                """
+            )
+        return [row["table_name"] for row in rows]
+
+    async def fetch_posts_with_summary(self, table_name: str) -> list[int]:
+        """Return ``post_id`` values for posts that have a non-empty summary.
+
+        Args:
+            table_name: The post table to inspect (e.g. ``posts_main``).
+
+        Returns:
+            A list of ``post_id`` values, possibly empty.
+        """
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                f"SELECT post_id FROM {table_name} "  # noqa: S608
+                "WHERE summary IS NOT NULL AND summary != ''"
+            )
+        return [row["post_id"] for row in rows]
