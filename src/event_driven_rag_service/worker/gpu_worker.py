@@ -169,8 +169,18 @@ class GpuEmbedWorker(BaseWorker):
                 found_work = True
                 idle_since = None
 
-                self._ensure_model(model_name)
-                ok, failed = self._process_batch(batch, model_name)
+                try:
+                    self._ensure_model(model_name)
+                except Exception:
+                    logger.exception(
+                        "GpuEmbedWorker: failed to load model %r — nacking %d message(s) "
+                        "and moving on to the next queue",
+                        model_name,
+                        len(batch),
+                    )
+                    ok, failed = [], batch
+                else:
+                    ok, failed = self._process_batch(batch, model_name)
 
                 logger.info(
                     "GpuEmbedWorker: batch complete (ok=%d failed=%d)",

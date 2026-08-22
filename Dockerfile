@@ -9,7 +9,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Install Python dependencies first for better layer caching
 COPY pyproject.toml .
-RUN pip install --no-cache-dir -e .
+# The GGUF extra (llama-cpp-python) is a slow C++ build only the GPU worker's
+# local fallback needs — skip it for every other service. Set
+# INSTALL_GGUF=true in the gpu-worker build args to enable local GGUF models.
+ARG INSTALL_GGUF=false
+RUN if [ "$INSTALL_GGUF" = "true" ]; then \
+    pip install --no-cache-dir -e ".[gguf]"; \
+    else \
+    pip install --no-cache-dir -e .; \
+    fi
 
 # Optional: pre-download embedding models into the image layer.
 # Set PREDOWNLOAD_MODELS=true in the gpu-worker build args to bake models in

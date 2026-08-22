@@ -172,6 +172,9 @@ services:
         # The hf_model_cache volume is then seeded from the image on first run and
         # persists across docker compose up --force-recreate.
         PREDOWNLOAD_MODELS: "true"
+        # Only the GPU worker needs llama-cpp-python (local GGUF fallback) —
+        # see the extra in pyproject.toml.
+        INSTALL_GGUF: "false"
     container_name: rag-gpu-worker
     restart: unless-stopped
     environment:

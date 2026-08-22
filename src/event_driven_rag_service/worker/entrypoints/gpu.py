@@ -141,11 +141,11 @@ def _load_local_model(model_name: str) -> Any:
             load_time,
         )
         return _RealEmbeddingModel(st_model, model_name)
-    except ImportError:
-        logger.warning(
-            "sentence-transformers not available — falling back to mock. "
+    except ImportError as exc:
+        raise RuntimeError(
+            f"sentence-transformers not available — cannot load {model_name!r}. "
             "Install via: pip install sentence-transformers"
-        )
+        ) from exc
 
 
 def _load_gguf_model(repo_id: str, filename: str, name: str | None = None) -> Any:
@@ -177,11 +177,12 @@ def _load_gguf_model(repo_id: str, filename: str, name: str | None = None) -> An
         record_model_load_time(load_time, filename)
         logger.info("GGUF model loaded: %s (load_time=%.2fs)", filename, load_time)
         return _LlamaCppEmbeddingModel(llama_model, name or filename)
-    except ImportError:
-        logger.warning(
-            "llama-cpp-python not available — falling back to mock. "
-            "Install via: pip install llama-cpp-python"
-        )
+    except ImportError as exc:
+        raise RuntimeError(
+            f"llama-cpp-python not available — cannot load GGUF model {filename!r}. "
+            "Install via: pip install -e '.[gguf]' (only needed for local GGUF models; "
+            "not required when using the remote embedder)"
+        ) from exc
 
 
 class _LazyLocalModel:
