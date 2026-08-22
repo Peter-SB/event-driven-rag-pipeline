@@ -57,7 +57,7 @@ qwen3_embed_cfg = EmbedConfig(
     queue="gpu.embed.qwen3-0.6b",
     dim=1024,
     remote_model="text-embedding-qwen3-embedding-0.6b",  # LM Studio's id for this model
-    local_repo_id="Qwen/Qwen3-0.6B",       # loaded via llama-cpp-python
+    local_repo_id="Qwen/Qwen3-Embedding-0.6B-GGUF",  # loaded via llama-cpp-python
     query_prefix=(
         "Instruct: Given a web search query, retrieve relevant passages that answer the query\n"
         "Query: "
