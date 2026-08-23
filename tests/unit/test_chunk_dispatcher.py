@@ -97,11 +97,10 @@ async def test_embed_task_uses_correct_model_for_title(fake_bus, fake_exchange):
 # EMBED_CONFIGS[...].queue is the bound RabbitMQ queue (task_queue.py
 # BINDINGS). Deriving the routing key from the sanitised *model name* instead
 # breaks as soon as a task_type's model string doesn't reduce to the queue's
-# suffix — e.g. summary_title's model is "Qwen3-Embedding-0.6B-Q8_0.gguf" but
-# it shares the "gpu.embed.qwen3-0.6b" queue with analysis's
-# "Qwen/Qwen3-0.6B". A model-name-derived key silently drops every
-# summary_title embed task since no queue is bound to
-# "gpu.embed.qwen3-embedding-0.6b-q8_0.gguf".
+# suffix — e.g. analysis's model is "Qwen/Qwen3-Embedding-0.6B" but its queue
+# is "gpu.embed.qwen3-0.6b". A model-name-derived key silently drops every
+# analysis embed task, since no queue is bound to
+# "gpu.embed.qwen-qwen3-embedding-0.6b".
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio

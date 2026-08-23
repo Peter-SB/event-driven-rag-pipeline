@@ -31,7 +31,7 @@ GpuEmbedWorker
     ↓ .encode(texts)
 FallbackEmbeddingModel          ← implements the EmbeddingModel protocol
     ├── RemoteEmbeddingModel    → HTTP → remote-embedder service (CUDA box)
-    └── local model             → SentenceTransformer / llama-cpp, in-process
+    └── local model             → SentenceTransformer, in-process
 ```
 
 `FallbackEmbeddingModel` is a drop-in `EmbeddingModel`: it exposes `.name` and
@@ -118,7 +118,8 @@ declares independently whether either leg is permitted.
 |---|---|---|---|---|
 | `body` | `BAAI/bge-base-en-v1.5` | `text-embedding-bge-base-en-v1.5` | — | remote + local |
 | `title` | `BAAI/bge-small-en-v1.5` | `text-embedding-bge-small-en-v1.5` | — | remote + local |
-| `summary_title` / `analysis` | `Qwen/Qwen3-Embedding-0.6B` | `text-embedding-qwen3-embedding-0.6b` | `int8` | remote + local (GGUF) |
+| `analysis` | `Qwen/Qwen3-Embedding-0.6B` | `text-embedding-qwen3-embedding-0.6b` | `int8` | remote + local |
+| `summary_title` | `Qwen/Qwen3-Embedding-4B` | `text-embedding-qwen3-embedding-4b` | `int8` | remote only |
 
 `allow_remote` and `allow_local` are separate booleans rather than one mode,
 because the four combinations are genuinely different situations:
@@ -126,15 +127,27 @@ because the four combinations are genuinely different situations:
 | `allow_remote` | `allow_local` | Behaviour |
 |---|---|---|
 | yes | yes | The default. Remote first, local when the endpoint is down. |
-| yes | no | Remote only. A failed batch **raises** rather than embedding locally. |
+| yes | no | Remote only. A failed batch is **skipped** for the backfill endpoint rather than embedded locally. |
 | no | yes | Never leaves this box. |
 | no | no | Config error — raised at worker startup, not at first task. |
 
 The remote-only case is the one worth explaining. Falling back to a local model
 sounds strictly safer, but for a model the box can't really run it isn't: the
 worker would spend minutes per batch on CPU, and the vectors would still land in
-the same pgvector column as the remote ones. A failed batch is nacked and
-redelivered once the endpoint returns; a quietly degraded one is not.
+the same pgvector column as the remote ones.
+
+So the batch is *skipped* instead. `_NoLocalFallback.encode()` raises
+`EmbeddingUnavailableError`, and `EmbedHandler` treats that specifically: it
+warns, **acks** the tasks, and persists nothing. The chunk rows are already in
+the table with `embedding IS NULL`, so the work is not lost — it is exactly what
+`POST /maintenance/requeue-missing-embeddings` scans for. Bring the endpoint
+back, call the endpoint, and the outage window drains.
+
+Acking rather than nacking is the deliberate part. Nacking would dead-letter
+every message from the outage, turning a temporary endpoint being down into a
+pile of messages someone has to replay by hand. Only *queries* still fail
+outright on this path — a query has no persisted row to backfill, and a search
+waiting on an embedding needs to hear about it now.
 
 > A model is only sent remotely when both sides have been told about it —
 > `remote_model` here, and the registry in `remote_embedder_service`.
@@ -147,15 +160,22 @@ routing and query-prefix lookups are all keyed on.
 
 ### Quantisation
 
-`quantization` is declared once, in the pipeline's config, and travels on the
-load call as `{"model": ..., "quantization": "int8"}`. Both legs honour it
-through different machinery: the remote applies bitsandbytes at load time, while
-locally it is already baked into the GGUF build named by `gguf`.
+`quantization` is declared once, in the pipeline's config, and both legs honour
+it the same way: bitsandbytes at load time. Remotely it travels on the load call
+as `{"model": ..., "quantization": "int8"}`; locally it becomes a
+`BitsAndBytesConfig(load_in_8bit=True)` in `SentenceTransformer`'s
+`model_kwargs`. Same checkpoint, same precision, either way — a batch that falls
+back mid-run is comparable with the ones around it in the pgvector column.
 
-It is advisory. A remote that can't honour it — no CUDA device, bitsandbytes
-missing — loads at full precision and says so in the load response, and the
-client logs a warning rather than failing. Vectors at the wrong precision are
-still usable; no vectors at all are not.
+It is advisory on both legs. A box that can't honour it — no CUDA device,
+bitsandbytes missing — loads at full precision and says so (the remote in its
+load response, the local in its log line) rather than failing. Vectors at the
+wrong precision are still usable; no vectors at all are not.
+
+The accepted spellings (`int8`, `8bit`, `q8_0`, …) are duplicated in
+`worker/entrypoints/gpu.py` and `remote_embedder_service/manager.py`. They must
+agree: one config string that means int8 on one leg and full precision on the
+other is worse than no quantisation at all.
 
 > This is the one place the wire format deliberately went past what LM Studio
 > did. The field is optional, and a server that ignores it behaves exactly as
@@ -179,7 +199,9 @@ whether remote embedding was worth doing at all. It was a poor fit to keep:
   click, not a deployment step, so the service's state lived in someone's memory
   rather than in code.
 - GGUF via llama.cpp, when the pipeline wants the canonical safetensors weights
-  and the GPU can run them directly.
+  and the GPU can run them directly. (The pipeline's local leg briefly loaded
+  GGUF too, via llama-cpp-python; it now loads the same safetensors repo as the
+  remote, so the two legs no longer disagree about what "the model" is.)
 - An undocumented native API (`/api/v0/models`, `/api/v1/models/load`) that
   shifts between versions, with nothing pinning the fields the pipeline depends
   on.
@@ -256,9 +278,9 @@ strings per model; nothing at runtime notices when they drift.
 ## Migration: the Qwen3 chunk tables were renamed
 
 `EmbedConfig.primary` replaced the old `model` field, and for Qwen3 its value
-changed from the GGUF filename to the canonical repo id — the GGUF is now an
-optional detail of the *local* leg (`gguf=GgufSpec(...)`) rather than the
-model's identity. Chunk table names embed that identity, so they moved:
+changed from the GGUF filename to the canonical repo id. (GGUF has since gone
+entirely: both legs now load the safetensors repo.) Chunk table names embed
+that identity, so they moved:
 
 | Old | New |
 |---|---|

@@ -13,8 +13,13 @@ Tested behaviours
   wraps the local model in FallbackEmbeddingModel, and encode() still produces
   a usable vector even when nothing is listening at the remote URL.
 - ``allow_local=False`` gives a remote-only model: it still wraps, but the
-  fallback leg raises instead of quietly embedding on the CPU, and the
-  combination of both flags off is a startup error rather than a runtime one.
+  fallback leg raises ``EmbeddingUnavailableError`` instead of quietly
+  embedding on the CPU (``EmbedHandler`` turns that into a skip for the
+  backfill endpoint), and the combination of both flags off is a startup error
+  rather than a runtime one.
+- The local leg honours ``EmbedConfig.quantization`` through bitsandbytes, the
+  same field and the same mechanism the remote leg uses, so a batch that falls
+  back mid-run is not silently a different precision.
 - ``quantization`` from the config reaches the remote client, so precision is
   declared in one place rather than separately on each side.
 - Coverage: the routing decision is checked for *every* EMBED_CONFIGS entry,
@@ -32,6 +37,7 @@ os.environ["MOCK_EMBEDDINGS"] = "1"
 
 from event_driven_rag_service.config.embedding_config import EMBED_CONFIGS
 from event_driven_rag_service.config.settings import settings
+from event_driven_rag_service.exceptions import EmbeddingUnavailableError
 from event_driven_rag_service.worker.entrypoints import gpu as gpu_entrypoint
 from event_driven_rag_service.worker.remote_embedding import FallbackEmbeddingModel
 
@@ -119,16 +125,19 @@ def test_config_quantization_is_passed_to_the_remote_client():
 
 def test_remote_only_model_raises_rather_than_embedding_locally(patched_configs):
     """`allow_local=False` marks a model this box can't run. When the remote is
-    down the batch must fail loudly and be redelivered, not silently produce
-    vectors from some other model — those would land in the same pgvector
-    column and quietly poison every future search against it."""
+    down the batch must raise rather than silently produce vectors from some
+    other model — those would land in the same pgvector column and quietly
+    poison every future search against it. The raise is how the batch gets
+    skipped and left for the backfill endpoint."""
     cfg = patched_configs("summary_title", allow_local=False)
     settings.embed_remote_url = DEAD_URL
 
     model = gpu_entrypoint._load_model(cfg.primary)
 
     assert isinstance(model, FallbackEmbeddingModel)
-    with pytest.raises(RuntimeError, match="local embedding is disabled"):
+    # The typed error is the contract EmbedHandler keys on to skip the batch
+    # rather than dead-letter it — a bare RuntimeError would be DLQ'd instead.
+    with pytest.raises(EmbeddingUnavailableError, match="local embedding is disabled"):
         model.encode(["hello world"])
 
 
@@ -198,3 +207,133 @@ def test_every_config_stays_local_when_remote_url_unset(task_type):
 
     model = gpu_entrypoint._load_model(cfg.primary)
     assert not isinstance(model, FallbackEmbeddingModel)
+
+
+# --- local leg: same quantisation mechanism as the remote -------------------
+
+
+class _FakeSentenceTransformer:
+    """Records the kwargs it was constructed with, so the tests can assert on
+    how the local leg asked for the model rather than actually loading one."""
+
+    last_kwargs: dict | None = None
+
+    def __init__(self, model_name, **kwargs):
+        type(self).last_kwargs = {"model_name": model_name, **kwargs}
+        self.model_name = model_name
+
+    def get_embedding_dimension(self):
+        return 1024
+
+    def encode(self, texts):
+        return [[0.0] * 1024 for _ in texts]
+
+
+@pytest.fixture
+def fake_sentence_transformer(monkeypatch):
+    """Patch SentenceTransformer at its import site inside sentence_transformers,
+    since _load_sentence_transformer imports it lazily on each call."""
+    import sentence_transformers
+
+    _FakeSentenceTransformer.last_kwargs = None
+    monkeypatch.setattr(
+        sentence_transformers, "SentenceTransformer", _FakeSentenceTransformer
+    )
+    return _FakeSentenceTransformer
+
+
+def test_local_load_applies_int8_via_bitsandbytes_on_cuda(
+    fake_sentence_transformer, monkeypatch
+):
+    """`quantization="int8"` must reach the local load as a BitsAndBytesConfig.
+
+    This is the whole point of the config field being shared: the remote sends
+    it on /api/v1/models/load, the local leg passes it to transformers, and
+    both produce int8 vectors from the same checkpoint. If the local leg
+    quietly loaded full precision, a fallback batch would sit in the same
+    pgvector column at a different precision.
+    """
+    monkeypatch.setattr(gpu_entrypoint, "_resolve_device", lambda: "cuda")
+
+    gpu_entrypoint._load_sentence_transformer("Qwen/Qwen3-Embedding-0.6B", "int8")
+
+    kwargs = fake_sentence_transformer.last_kwargs
+    assert "quantization_config" in kwargs["model_kwargs"]
+    assert kwargs["model_kwargs"]["quantization_config"].load_in_8bit is True
+    # accelerate places quantised weights; passing `device=` alongside errors.
+    assert kwargs["model_kwargs"]["device_map"] == "auto"
+    assert "device" not in kwargs
+
+
+def test_local_load_falls_back_to_full_precision_without_cuda(
+    fake_sentence_transformer, monkeypatch
+):
+    """int8 via bitsandbytes is a CUDA path. On a CPU-only box the load must
+    still succeed at full precision rather than refusing — this leg exists
+    precisely for when the GPU box is unreachable."""
+    monkeypatch.setattr(gpu_entrypoint, "_resolve_device", lambda: "cpu")
+
+    gpu_entrypoint._load_sentence_transformer("Qwen/Qwen3-Embedding-0.6B", "int8")
+
+    kwargs = fake_sentence_transformer.last_kwargs
+    assert "model_kwargs" not in kwargs
+    assert kwargs["device"] == "cpu"
+
+
+def test_local_load_retries_at_full_precision_when_int8_load_fails(monkeypatch):
+    """bitsandbytes may be missing on a box that only ever expected to be the
+    fallback leg. A slower model beats a worker that cannot embed at all."""
+    import sentence_transformers
+
+    attempts: list[bool] = []
+
+    class _Flaky(_FakeSentenceTransformer):
+        def __init__(self, model_name, **kwargs):
+            quantised = "model_kwargs" in kwargs
+            attempts.append(quantised)
+            if quantised:
+                raise ImportError("no bitsandbytes here")
+            super().__init__(model_name, **kwargs)
+
+    monkeypatch.setattr(sentence_transformers, "SentenceTransformer", _Flaky)
+    monkeypatch.setattr(gpu_entrypoint, "_resolve_device", lambda: "cuda")
+
+    model = gpu_entrypoint._load_sentence_transformer("Qwen/Qwen3-Embedding-0.6B", "int8")
+
+    assert attempts == [True, False], "should try int8 first, then full precision"
+    assert model.name == "Qwen/Qwen3-Embedding-0.6B"
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("int8", True),
+        ("8bit", True),
+        ("Q8_0", True),
+        (None, False),
+        ("none", False),
+        ("fp16", False),
+        ("nonsense", False),  # unknown → full precision, never a failed load
+    ],
+)
+def test_quantization_spellings_match_the_remote_services_vocabulary(value, expected):
+    """The two legs read the same config string, so they must agree on what it
+    means. Drift here would make one leg int8 and the other full precision off
+    a single `quantization=` value."""
+    assert gpu_entrypoint._wants_int8(value, "some/model") is expected
+
+
+def test_local_load_rejects_a_model_whose_dim_disagrees_with_the_config(
+    fake_sentence_transformer, monkeypatch
+):
+    """The remote verifies vector width after loading; the local leg must too.
+
+    These vectors land in a fixed-width pgvector column, so a repo revision that
+    changed shape has to fail at load rather than as opaque insert errors, one
+    batch at a time, for as long as nobody looks.
+    """
+    monkeypatch.setattr(gpu_entrypoint, "_resolve_device", lambda: "cpu")
+
+    # The fake reports 1024 dims; bge-small declares 384.
+    with pytest.raises(RuntimeError, match="refusing to embed"):
+        gpu_entrypoint._load_sentence_transformer(BGE_SMALL, None)

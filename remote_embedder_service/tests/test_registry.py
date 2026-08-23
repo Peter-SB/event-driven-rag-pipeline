@@ -8,7 +8,7 @@ embedding silently, and a changed `dim` corrupts a pgvector column.
 
 EMBED_CONFIGS is read by parsing the pipeline's source with `ast`, not by
 importing it — this service must not depend on `event_driven_rag_service`, which
-would drag in asyncpg, aio-pika and llama-cpp-python onto the GPU box.
+would drag asyncpg, aio-pika and the whole pipeline onto the GPU box.
 
 Tested behaviours
 ------------------
@@ -75,8 +75,8 @@ def test_dims_are_positive():
 
 
 def test_no_gguf_repos():
-    """This service runs safetensors through transformers, not llama.cpp. A GGUF
-    repo id here would only fail at download time on the remote box."""
+    """Specs load through transformers, which cannot read GGUF. A GGUF repo id
+    here would only fail at download time on the remote box."""
     for spec in all_specs():
         assert "gguf" not in spec.repo_id.lower(), spec.id
 

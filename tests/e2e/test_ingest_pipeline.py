@@ -49,7 +49,9 @@ import pytest
 import asyncpg
 import httpx
 
+from event_driven_rag_service.config.embedding_config import EMBED_CONFIGS
 from event_driven_rag_service.data_models.post import Post
+from event_driven_rag_service.utils.build_table_names import build_chunk_table_name
 from event_driven_rag_service.repository.chunk_repository import ChunkRepository
 
 pytestmark = pytest.mark.e2e
@@ -756,7 +758,9 @@ async def test_summary_title_chunking_and_embedding_pipeline(
     logger.info("post.synced event verified: has_summary=%s", ps_event["has_summary"])
 
     # Step 3: Wait for summary_title chunk table to be created
-    summary_chunk_table = "posts_e2e_chunks_summary_title_qwen3_embedding_0_6b_q8_0_gguf"
+    summary_chunk_table = build_chunk_table_name(
+        "posts_e2e", "summary_title", EMBED_CONFIGS["summary_title"].primary
+    )
 
     table_exists = False
     for attempt in range(20):

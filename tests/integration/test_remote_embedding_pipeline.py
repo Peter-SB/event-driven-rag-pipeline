@@ -28,7 +28,7 @@ from tests.utils.factories import FakeEventBus, make_chunk
 
 pytestmark = pytest.mark.integration
 
-_MODEL_NAME = "Qwen3-Embedding-0.6B-Q8_0.gguf"
+_MODEL_NAME = "Qwen/Qwen3-Embedding-0.6B"
 _DIM = 1024
 
 

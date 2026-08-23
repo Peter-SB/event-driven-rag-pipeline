@@ -29,7 +29,10 @@ from event_driven_rag_service.infrastructure.metrics import (
     record_encode_latency,
     record_failure,
 )
-from event_driven_rag_service.exceptions import ChunkTableNotFoundError
+from event_driven_rag_service.exceptions import (
+    ChunkTableNotFoundError,
+    EmbeddingUnavailableError,
+)
 from event_driven_rag_service.tasks.embed_task import EmbedTask
 from event_driven_rag_service.utils.tracing_utils import extract_trace_context
 
@@ -212,6 +215,26 @@ class EmbedHandler:
         encode_start = time.time()
         try:
             vectors = encoder.encode(texts)
+        except EmbeddingUnavailableError as exc:
+            # No leg could serve this model right now (remote down, local
+            # disabled). Ack the tasks rather than DLQ'ing them: the chunk rows
+            # are still there with embedding IS NULL, so
+            # POST /maintenance/requeue-missing-embeddings will re-queue them
+            # once the endpoint is back. DLQ'ing instead would turn a temporary
+            # outage into a pile of dead messages needing manual replay.
+            logger.warning(
+                "EmbedHandler: no embedding backend available for %s — skipping "
+                "%d chunk(s) across %d task(s), leaving them unembedded for the "
+                "backfill endpoint (/maintenance/requeue-missing-embeddings) to "
+                "retry. Reason: %s",
+                model_name,
+                len(texts),
+                len(tasks),
+                exc,
+            )
+            record_failure("embedding_unavailable", "gpu-worker")
+            span.set_attribute("embedding_skipped", True)
+            return [t for t in tasks if t not in fetch_failed], fetch_failed
         except Exception:
             logger.exception("EmbedHandler: encode() failed — failing entire batch")
             return [], tasks
@@ -373,6 +396,18 @@ class EmbedHandler:
                 record_embedding_latency(latency_seconds, model_name)
 
                 return True
+            except EmbeddingUnavailableError as exc:
+                # Unlike chunks there is nothing persisted to backfill, so the
+                # task is failed and the waiting search sees no embedding.
+                logger.warning(
+                    "EmbedHandler: no embedding backend available for %s — "
+                    "failing query (job_id=%s): %s",
+                    model_name,
+                    task.query_job_id,
+                    exc,
+                )
+                record_failure("embedding_unavailable", "gpu-worker")
+                return False
             except Exception:
                 logger.exception(
                     "EmbedHandler: query embed failed (job_id=%s)",

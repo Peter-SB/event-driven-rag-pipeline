@@ -5,8 +5,8 @@ deliberately the same slugs LM Studio used, so the pipeline's
 ``EMBED_CONFIGS[...].remote_model`` values keep working unchanged when
 ``EMBED_REMOTE_URL`` is repointed at this service.
 
-Repo ids are safetensors repos, never GGUF — this service runs the models through
-transformers/sentence-transformers on CUDA, not llama.cpp.
+Repo ids are safetensors repos — the same checkpoints the pipeline's local
+fallback leg loads, run here through transformers/sentence-transformers on CUDA.
 """
 from __future__ import annotations
 
@@ -49,8 +49,6 @@ MODEL_REGISTRY: dict[str, ModelSpec] = {
     ),
     "text-embedding-qwen3-embedding-0.6b": ModelSpec(
         id="text-embedding-qwen3-embedding-0.6b",
-        # NOT the -GGUF repo: that one is for the pipeline's local llama-cpp
-        # fallback leg. This service needs the safetensors weights.
         repo_id="Qwen/Qwen3-Embedding-0.6B",
         dim=1024,
         quantize=True,

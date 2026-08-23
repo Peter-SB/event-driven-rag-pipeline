@@ -1,7 +1,7 @@
 """Opt-in integration test against a real LM Studio (or other OpenAI-compatible) endpoint.
 
 Requires a live endpoint reachable at EMBED_REMOTE_URL, loaded with the
-summary_title model (see config/embedding_config.py: Qwen3-Embedding-0.6B-Q8_0.gguf).
+summary_title model (see config/embedding_config.py: qwen3_4b_embed_cfg).
 Skipped automatically when EMBED_REMOTE_URL is unset — not part of CI, opt-in
 for verifying real hardware (e.g. a homelab gaming PC running LM Studio).
 
@@ -73,8 +73,8 @@ def test_live_endpoint_is_reachable(live_client: httpx.Client):
     assert resp.status_code == 200
 
 
-def test_live_endpoint_embeds_summary_title_with_qwen3_gguf(live_client: httpx.Client):
-    """Verify LM Studio actually produces embeddings using the summary_title (Qwen3 gguf) model."""
+def test_live_endpoint_embeds_summary_title_with_qwen3(live_client: httpx.Client):
+    """Verify the endpoint actually produces embeddings using the summary_title (Qwen3) model."""
     remote_model_name = _SUMMARY_TITLE_CONFIG.remote_id
     remote = RemoteEmbeddingModel(live_client, remote_model_name)
 

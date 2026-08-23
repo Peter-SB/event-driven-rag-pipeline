@@ -301,10 +301,9 @@ migration note in [docs/RemoteEmbedding.md](docs/RemoteEmbedding.md).
 |---|---|
 | `primary` | Canonical model id (`org/name`). Identity, routing, table naming. |
 | `queue` / `dim` | RabbitMQ routing key; pgvector column width. |
-| `allow_local` / `allow_remote` | Which legs may serve this model. Both default true; `allow_local=False` makes a failed remote batch raise instead of silently embedding on CPU. |
+| `allow_local` / `allow_remote` | Which legs may serve this model. Both default true; `allow_local=False` makes a failed remote batch raise `EmbeddingUnavailableError`, which `EmbedHandler` turns into a skip — the chunks stay unembedded for `POST /maintenance/requeue-missing-embeddings` rather than being dead-lettered. |
 | `remote_model` | Wire id on the remote service, when it differs from `primary`. |
-| `gguf` | Optional `GgufSpec(repo_id, filename)` — the local leg loads via llama-cpp instead of SentenceTransformer. |
-| `quantization` | e.g. `"int8"`. Sent on the remote load call; baked into the GGUF locally. |
+| `quantization` | e.g. `"int8"`. Applied via bitsandbytes on both legs: sent on the remote load call, passed as a `BitsAndBytesConfig` to SentenceTransformer locally. Best-effort — a CPU-only box loads full precision and logs it. |
 | `query_prefix` | Instruction prefix for asymmetric retrieval models (queries only). |
 
 ### Syncing Posts With a New Library

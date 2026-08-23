@@ -84,23 +84,23 @@ this the hard way once already).
 |---|---|---|
 | `body` | `BAAI/bge-base-en-v1.5` | `posts_main_chunks_body_baai_bge_base_en_v1_5` |
 | `title` | `BAAI/bge-small-en-v1.5` | `posts_main_chunks_title_baai_bge_small_en_v1_5` |
-| `summary_title` | `Qwen3-Embedding-0.6B-Q8_0.gguf` | `posts_main_chunks_summary_title_qwen3_embedding_0_6b_q8_0_gguf` |
-| `analysis` | `Qwen/Qwen3-0.6B` | `posts_main_chunks_analysis_qwen_qwen3_0_6b` |
+| `summary_title` | `Qwen/Qwen3-Embedding-4B` | `posts_main_chunks_summary_title_qwen_qwen3_embedding_4b` |
+| `analysis` | `Qwen/Qwen3-Embedding-0.6B` | `posts_main_chunks_analysis_qwen_qwen3_embedding_0_6b` |
 
 ---
 
 ## Embed Configs (`config/embedding_config.py`)
 
-`summary_title` and `analysis` intentionally share one GPU queue
-(`gpu.embed.qwen3-0.6b`) under two different model strings — the queue is a physical
-worker/model-load unit, not a 1:1 mirror of `model`.
+A queue is a physical worker/model-load unit, not a 1:1 mirror of `model`: several
+task_types may share one queue when they share a model, and the queue name is a short
+alias rather than the sanitised model string.
 
 | task_type | model | vector dim | queue |
 |---|---|---|---|
 | `body` | `BAAI/bge-base-en-v1.5` | 768 | `gpu.embed.bge-base-en-v1.5` |
 | `title` | `BAAI/bge-small-en-v1.5` | 384 | `gpu.embed.bge-small-en-v1.5` |
-| `summary_title` | `Qwen3-Embedding-0.6B-Q8_0.gguf` | 1024 | `gpu.embed.qwen3-0.6b` |
-| `analysis` | `Qwen/Qwen3-0.6B` | 1024 | `gpu.embed.qwen3-0.6b` |
+| `summary_title` | `Qwen/Qwen3-Embedding-4B` | 2560 | `gpu.embed.qwen3-4b` |
+| `analysis` | `Qwen/Qwen3-Embedding-0.6B` | 1024 | `gpu.embed.qwen3-0.6b` |
 
 ---
 

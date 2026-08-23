@@ -30,11 +30,20 @@ import httpx
 import pytest
 import pytest_asyncio
 
+from event_driven_rag_service.config.embedding_config import EMBED_CONFIGS
+from event_driven_rag_service.utils.build_table_names import build_chunk_table_name
+
 
 pytestmark = pytest.mark.e2e
 
 # Connection defaults match the docker-compose.yml service names and ports.
 _DB_URL = os.getenv("DB_URL", "postgresql://rag:rag@localhost:5432/rag")
+# Derived, not hardcoded: summary_title's model (and so its chunk table name) changes
+# whenever EMBED_CONFIGS does, and a stale literal here silently stops cleaning up.
+_SUMMARY_TITLE_CHUNK_TABLE = build_chunk_table_name(
+    "posts_e2e", "summary_title", EMBED_CONFIGS["summary_title"].primary
+)
+
 _RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://rag:rag@localhost:5672/")
 _API_BASE = os.getenv("API_BASE", "http://localhost:8000")
 
@@ -107,7 +116,7 @@ async def async_client(postgres_pool_e2e: asyncpg.Pool):
         await conn.execute("DROP TABLE IF EXISTS posts_e2e")
         await conn.execute("DROP TABLE IF EXISTS posts_e2e_chunks_body_baai_bge_base_en_v1_5")
         await conn.execute("DROP TABLE IF EXISTS posts_e2e_chunks_title_baai_bge_small_en_v1_5")
-        await conn.execute("DROP TABLE IF EXISTS posts_e2e_chunks_summary_title_qwen3_embedding_0_6b_q8_0_gguf")
+        await conn.execute(f"DROP TABLE IF EXISTS {_SUMMARY_TITLE_CHUNK_TABLE}")
 
     async with httpx.AsyncClient(base_url=_API_BASE, timeout=30.0) as client:
         yield client
@@ -118,6 +127,6 @@ async def async_client(postgres_pool_e2e: asyncpg.Pool):
         await conn.execute("DROP TABLE IF EXISTS posts_e2e")
         await conn.execute("DROP TABLE IF EXISTS posts_e2e_chunks_body_baai_bge_base_en_v1_5")
         await conn.execute("DROP TABLE IF EXISTS posts_e2e_chunks_title_baai_bge_small_en_v1_5")
-        await conn.execute("DROP TABLE IF EXISTS posts_e2e_chunks_summary_title_qwen3_embedding_0_6b_q8_0_gguf")
+        await conn.execute(f"DROP TABLE IF EXISTS {_SUMMARY_TITLE_CHUNK_TABLE}")
         await conn.execute("DELETE FROM event_log")
         await conn.execute("DELETE FROM consumer_offsets")

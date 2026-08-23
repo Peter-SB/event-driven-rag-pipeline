@@ -9,20 +9,6 @@ class ChunkConfig:
     chunk_overlap: float    # fraction of previous chunk to prepend as overlap (e.g. 0.10)
 
 
-@dataclass(frozen=True)
-class GgufSpec:
-    """Where to get a GGUF build of a model, for the *local* embedding leg only.
-
-    SentenceTransformer cannot load GGUF, so a config carrying one of these
-    loads locally through llama-cpp-python instead. The remote leg never uses
-    this — `remote_embedder_service` runs safetensors through transformers, so
-    the same logical model is packaged differently on each side.
-    """
-
-    repo_id: str    # HF repo hosting the file, e.g. "Qwen/Qwen3-Embedding-0.6B-GGUF"
-    filename: str   # the file within it, e.g. "Qwen3-Embedding-0.6B-Q8_0.gguf"
-
-
 @dataclass
 class EmbedConfig:
     # Canonical identity of the model, in HF `org/name` form. This one string is
@@ -38,9 +24,11 @@ class EmbedConfig:
     # --- where the work may happen -----------------------------------------
     # Both legs are opt-in-able independently. `allow_remote` without a reachable
     # endpoint is harmless (it just falls through to local); `allow_local=False`
-    # is the meaningful one — it marks a model this box genuinely cannot run,
-    # so a failed remote batch raises instead of silently loading 1.2GB of
-    # weights onto a CPU and taking minutes per batch.
+    # is the meaningful one — it marks a model this box genuinely cannot run, so
+    # instead of loading 1.2GB of weights onto a CPU and taking minutes per
+    # batch, the worker warns and leaves the chunks unembedded for
+    # POST /maintenance/requeue-missing-embeddings to pick up once the remote
+    # endpoint is back.
     allow_local: bool = True
     allow_remote: bool = True
 
@@ -49,16 +37,13 @@ class EmbedConfig:
     # slugs LM Studio used, kept for continuity). None means "same as primary".
     remote_model: str | None = None
 
-    # Optional GGUF packaging for the local leg. None means `primary` is loaded
-    # directly as a SentenceTransformer.
-    gguf: GgufSpec | None = None
-
-    # Requested weight precision, e.g. "int8". Declarative and shared across both
-    # legs, but satisfied differently by each: the remote service applies it via
-    # bitsandbytes at load time (it's sent on POST /api/v1/models/load), while
-    # locally it's already baked into the GGUF build referenced above. None means
-    # full precision. A model whose GGUF is Q8_0 should say "int8" here — the two
-    # express the same intent through different machinery.
+    # Requested weight precision, e.g. "int8". One declaration, honoured the same
+    # way by both legs: bitsandbytes at load time. Remotely it rides on
+    # POST /api/v1/models/load; locally it becomes a BitsAndBytesConfig passed
+    # through SentenceTransformer's model_kwargs. None means full precision.
+    #
+    # Both legs treat it as best-effort: int8 via bitsandbytes is a CUDA path, so
+    # a CPU-only box loads at full precision and says so rather than refusing.
     quantization: str | None = None
 
     # Text prepended to the raw query string before embedding (never applied to
@@ -110,12 +95,8 @@ qwen3_embed_cfg = EmbedConfig(
     queue="gpu.embed.qwen3-0.6b",
     dim=1024,
     remote_model="text-embedding-qwen3-embedding-0.6b",
-    # 8-bit both ways: bitsandbytes on the remote, the Q8_0 build locally.
+    # 8-bit via bitsandbytes on whichever leg serves the batch.
     quantization="int8",
-    gguf=GgufSpec(
-        repo_id="Qwen/Qwen3-Embedding-0.6B-GGUF",
-        filename="Qwen3-Embedding-0.6B-Q8_0.gguf",
-    ),
     query_prefix=(
         "Instruct: Given a web search query, retrieve relevant passages that answer the query\n"
         "Query: "
@@ -128,11 +109,7 @@ qwen3_4b_embed_cfg = EmbedConfig(
     dim=2560,
     remote_model="text-embedding-qwen3-embedding-4b",
     quantization="int8",
-    # This box's 8GB card OOMs above ~4 docs of full-length summary text at
-    # once (measured), and has no local GGUF leg configured for this model —
-    # a failed remote batch should raise, not fall back to a multi-minute CPU
-    # load.
-    allow_local=False,
+    allow_local=True,
     max_batch=2,
     query_prefix=(
         "Instruct: Given a web search query, retrieve relevant passages that answer the query\n"

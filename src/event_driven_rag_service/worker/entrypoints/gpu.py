@@ -23,6 +23,7 @@ import asyncpg
 from event_driven_rag_service.config.settings import settings
 from event_driven_rag_service.infrastructure.observability import setup_observability
 from event_driven_rag_service.config.embedding_config import EMBED_CONFIGS
+from event_driven_rag_service.exceptions import EmbeddingUnavailableError
 from event_driven_rag_service.infrastructure.event_bus import create_event_bus, PostgresEventBus
 from event_driven_rag_service.infrastructure.metrics import record_model_load_time
 from event_driven_rag_service.infrastructure.task_queue import verify_embedding_topology
@@ -60,9 +61,11 @@ def _load_model(model_name: str) -> Any:
     - **both** (the default): the remote endpoint is tried first for every batch
       and the local model is loaded lazily, only if the endpoint goes down.
     - **remote only** (`allow_local=False`): this box genuinely cannot run the
-      model, so a failed remote batch raises rather than silently loading a
-      multi-gigabyte model onto a CPU and taking minutes per batch. Better a
-      visible failure and a retry than a queue that appears to be draining.
+      model, so a failed remote batch raises ``EmbeddingUnavailableError``
+      rather than silently loading a multi-gigabyte model onto a CPU and taking
+      minutes per batch. ``EmbedHandler`` turns that into a *skip*: the chunks
+      stay unembedded and ``POST /maintenance/requeue-missing-embeddings``
+      re-queues them once the endpoint is back.
     - **local only** (`allow_remote=False`): never routed off-box.
     - **neither**: a config error — raised here at startup, not at first encode.
 
@@ -112,8 +115,56 @@ def _load_model(model_name: str) -> Any:
     )
 
 
+# Accepted spellings for EmbedConfig.quantization. Kept in step with
+# remote_embedder_service.manager._QUANT_* so one config string means the same
+# thing on both legs — a value the remote honours must not silently mean
+# "full precision" locally.
+_QUANT_INT8 = {"int8", "8bit", "8-bit", "q8", "q8_0"}
+_QUANT_OFF = {"none", "off", "full", "fp16", "float16", "fp32", "float32"}
+
+
+def _wants_int8(quantization: str | None, model_name: str) -> bool:
+    """Whether *quantization* asks for an 8-bit load.
+
+    An unrecognised value falls back to full precision with a warning rather
+    than failing the load — this is the fallback leg, and refusing to load at
+    all would trade a precision mismatch for no embeddings whatsoever.
+    """
+    if quantization is None:
+        return False
+    value = quantization.strip().lower()
+    if value in _QUANT_INT8:
+        return True
+    if value in _QUANT_OFF:
+        return False
+    logger.warning(
+        "Unrecognised quantization %r for %r — loading at full precision",
+        quantization,
+        model_name,
+    )
+    return False
+
+
+def _resolve_device() -> str:
+    """``"cuda"`` when a GPU is visible to torch, else ``"cpu"``."""
+    try:
+        import torch
+
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    except Exception:  # torch missing or broken — the ST load will say so
+        return "cpu"
+
+
 def _load_local_model(model_name: str) -> Any:
     """Load a local embedding model by name (blocking — runs in the main thread).
+
+    Deliberately the same mechanism as the remote leg
+    (``remote_embedder_service.manager.default_loader``): SentenceTransformer
+    over the canonical safetensors weights, with int8 applied through
+    bitsandbytes when ``EmbedConfig.quantization`` asks for it. Both legs
+    therefore read the same config field and produce vectors from the same
+    checkpoint at the same precision — a batch that falls back mid-run stays
+    comparable with the ones around it in the pgvector column.
 
     Set MOCK_EMBEDDINGS=1 for local development without a GPU.
     """
@@ -122,67 +173,98 @@ def _load_local_model(model_name: str) -> Any:
         return _MockEmbeddingModel(model_name)
 
     cfg = _config_for(model_name)
-    if cfg is not None and cfg.gguf is not None:
-        return _load_gguf_model(cfg.gguf.repo_id, cfg.gguf.filename, model_name)
+    quantization = cfg.quantization if cfg is not None else None
+    return _load_sentence_transformer(model_name, quantization)
 
+
+def _load_sentence_transformer(model_name: str, quantization: str | None) -> Any:
+    """SentenceTransformer load, optionally in int8 via bitsandbytes.
+
+    A quantised load that fails is retried at full precision: bitsandbytes may
+    be missing on a box that only ever expected to be the fallback leg, and a
+    slower model beats a worker that cannot embed at all.
+    """
     try:
         from sentence_transformers import SentenceTransformer
-
-        logger.info("Loading SentenceTransformer: %s", model_name)
-        load_start = time.time()
-        st_model = SentenceTransformer(model_name, trust_remote_code=True)
-        load_time = time.time() - load_start
-        dim = st_model.get_embedding_dimension()
-        record_model_load_time(load_time, model_name)
-        logger.info(
-            "Model loaded: %s (dim=%d load_time=%.2fs)",
-            model_name,
-            dim,
-            load_time,
-        )
-        return _RealEmbeddingModel(st_model, model_name)
     except ImportError as exc:
         raise RuntimeError(
             f"sentence-transformers not available — cannot load {model_name!r}. "
             "Install via: pip install sentence-transformers"
         ) from exc
 
-
-def _load_gguf_model(repo_id: str, filename: str, name: str | None = None) -> Any:
-    """Load a GGUF embedding model via llama-cpp-python (blocking).
-
-    SentenceTransformer cannot load GGUF files, so models distributed in that
-    format (e.g. Qwen3-Embedding) go through llama-cpp-python instead, which
-    downloads/caches the file from the HF repo the same way ST does. The
-    quantisation is baked into the file itself — see EmbedConfig.quantization.
-
-    ``name`` is what the returned model reports as its ``.name``, and defaults to
-    the GGUF filename. Callers pass the config's `primary` so that identity stays
-    the same whichever leg and whichever packaging served the batch — the file
-    it came from is already in the load log below.
-    """
-    try:
-        from llama_cpp import Llama
-
-        logger.info("Loading GGUF embedding model via llama-cpp: %s/%s", repo_id, filename)
-        load_start = time.time()
-        llama_model = Llama.from_pretrained(
-            repo_id=repo_id,
-            filename=filename,
-            embedding=True,
-            n_gpu_layers=-1,
-            verbose=False,
+    device = _resolve_device()
+    want_int8 = _wants_int8(quantization, model_name)
+    if want_int8 and device != "cuda":
+        # int8 here is bitsandbytes' load_in_8bit, which is a CUDA path. Not a
+        # failure, but a model the config expects to be small is about to load
+        # full-size, which is worth flagging up front rather than only showing
+        # up as a surprisingly slow first batch.
+        logger.warning(
+            "%r requests int8 but no CUDA device is visible — loading at full "
+            "precision on CPU instead",
+            model_name,
         )
-        load_time = time.time() - load_start
-        record_model_load_time(load_time, filename)
-        logger.info("GGUF model loaded: %s (load_time=%.2fs)", filename, load_time)
-        return _LlamaCppEmbeddingModel(llama_model, name or filename)
-    except ImportError as exc:
+        want_int8 = False
+
+    def _build(quantised: bool) -> Any:
+        if quantised:
+            from transformers import BitsAndBytesConfig
+
+            # accelerate places the (already-quantised) weights, so device_map
+            # replaces the explicit `device=` argument rather than joining it.
+            return SentenceTransformer(
+                model_name,
+                trust_remote_code=True,
+                model_kwargs={
+                    "quantization_config": BitsAndBytesConfig(load_in_8bit=True),
+                    "device_map": "auto",
+                },
+            )
+        return SentenceTransformer(model_name, trust_remote_code=True, device=device)
+
+    load_start = time.time()
+    precision = "full precision"
+    st_model = None
+    if want_int8:
+        logger.info("Loading SentenceTransformer %s in int8 on %s", model_name, device)
+        try:
+            st_model = _build(quantised=True)
+            precision = "int8"
+        except Exception:
+            logger.warning(
+                "int8 load failed for %r — retrying at full precision "
+                "(is bitsandbytes installed?)",
+                model_name,
+                exc_info=True,
+            )
+
+    if st_model is None:
+        logger.info("Loading SentenceTransformer %s on %s", model_name, device)
+        st_model = _build(quantised=False)
+
+    load_time = time.time() - load_start
+    dim = st_model.get_embedding_dimension()
+    record_model_load_time(load_time, model_name)
+
+    # Same guard the remote service applies after its own load: these vectors go
+    # into a fixed-width pgvector column, so a repo revision that changed shape
+    # must fail here rather than surface as opaque insert errors per batch.
+    cfg = _config_for(model_name)
+    if cfg is not None and dim != cfg.dim:
         raise RuntimeError(
-            f"llama-cpp-python not available — cannot load GGUF model {filename!r}. "
-            "Install via: pip install -e '.[gguf]' (only needed for local GGUF models; "
-            "not required when using the remote embedder)"
-        ) from exc
+            f"{model_name!r} loaded with dim={dim} but EMBED_CONFIGS declares "
+            f"{cfg.dim}; refusing to embed into a column of the wrong width."
+        )
+
+    logger.info(
+        "Model loaded: %s (dim=%d quantization=%s device=%s load_time=%.2fs)",
+        model_name,
+        dim,
+        precision,
+        device,
+        load_time,
+    )
+    return _RealEmbeddingModel(st_model, model_name)
 
 
 class _LazyLocalModel:
@@ -190,9 +272,9 @@ class _LazyLocalModel:
 
     Used as the fallback leg of ``FallbackEmbeddingModel`` when a remote
     endpoint is configured — the local model should only be loaded if the
-    remote endpoint actually goes down, since the local leg can be a completely
-    different artifact (a GGUF build via llama-cpp) that costs disk, VRAM and
-    minutes to bring up.
+    remote endpoint actually goes down, since bringing the weights up locally
+    costs disk, VRAM and minutes — all of it wasted while the remote is healthy
+    and serving every batch.
     """
 
     def __init__(self, cfg: Any) -> None:
@@ -215,9 +297,11 @@ class _NoLocalFallback:
     """Stand-in local leg for models marked ``allow_local=False``.
 
     ``FallbackEmbeddingModel`` always wants a local leg, so this supplies one
-    that refuses. Raising here surfaces as a nacked task that RabbitMQ will
-    redeliver once the endpoint is back — which is the behaviour we want for a
-    model the local box was never going to be able to run.
+    that refuses. ``EmbeddingUnavailableError`` is the signal ``EmbedHandler``
+    reads to *skip* the batch: the chunk rows keep ``embedding IS NULL`` and
+    ``POST /maintenance/requeue-missing-embeddings`` re-queues them once the
+    endpoint is back, instead of a temporary outage filling the dead-letter
+    queue with messages someone has to replay by hand.
     """
 
     def __init__(self, name: str) -> None:
@@ -228,10 +312,11 @@ class _NoLocalFallback:
         return self._name
 
     def encode(self, texts: list[str]) -> list[list[float]]:
-        raise RuntimeError(
+        raise EmbeddingUnavailableError(
             f"Remote embedding unavailable for {self._name!r} and local embedding is "
             f"disabled for it (allow_local=False in EMBED_CONFIGS). Bring the remote "
-            f"embedder back up, or allow local embedding for this model."
+            f"embedder back up, then run POST /maintenance/requeue-missing-embeddings, "
+            f"or allow local embedding for this model."
         )
 
 
@@ -249,22 +334,6 @@ class _RealEmbeddingModel:
 
     def encode(self, texts: list[str]) -> list[list[float]]:
         return self._model.encode(texts)
-
-
-class _LlamaCppEmbeddingModel:
-    """Wraps a llama-cpp-python ``Llama`` (GGUF) model to match the EmbeddingModel protocol."""
-
-    def __init__(self, model: Any, name: str) -> None:
-        self._model = model
-        self._name = name
-
-    @property
-    def name(self) -> str:
-        return self._name
-
-    def encode(self, texts: list[str]) -> list[list[float]]:
-        result = self._model.create_embedding(texts)
-        return [row["embedding"] for row in result["data"]]
 
 
 class _MockEmbeddingModel:

@@ -9,15 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Install Python dependencies first for better layer caching
 COPY pyproject.toml .
-# The GGUF extra (llama-cpp-python) is a slow C++ build only the GPU worker's
-# local fallback needs — skip it for every other service. Set
-# INSTALL_GGUF=true in the gpu-worker build args to enable local GGUF models.
-ARG INSTALL_GGUF=false
-RUN if [ "$INSTALL_GGUF" = "true" ]; then \
-    pip install --no-cache-dir -e ".[gguf]"; \
-    else \
-    pip install --no-cache-dir -e .; \
-    fi
+RUN pip install --no-cache-dir -e .
 
 # Optional: pre-download embedding models into the image layer.
 # Set PREDOWNLOAD_MODELS=true in the gpu-worker build args to bake models in
@@ -30,7 +22,7 @@ RUN if [ "$PREDOWNLOAD_MODELS" = "true" ]; then \
 from sentence_transformers import SentenceTransformer; \
 SentenceTransformer('BAAI/bge-base-en-v1.5'); \
 SentenceTransformer('BAAI/bge-small-en-v1.5'); \
-SentenceTransformer('Qwen/Qwen3-0.6B', trust_remote_code=True); \
+SentenceTransformer('Qwen/Qwen3-Embedding-0.6B', trust_remote_code=True); \
 print('Embedding models cached.')"; \
 fi
 

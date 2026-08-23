@@ -9,6 +9,8 @@ Tested behaviours
 - embed_query() encodes a single search query and emits search_query.embedded
 - embedding.completed is grouped by (post_id, chunk_table)
 - Failed encoding returns all tasks to DLQ
+- EmbeddingUnavailableError is a *skip*, not a failure: the tasks are acked so
+  the chunk rows stay unembedded for the backfill endpoint, rather than DLQ'd
 - Missing query or job_id in embed_query is logged and treated as ok
 - save_batch is called with properly formatted rows (ChunkEmbeddingRow, QueryEmbeddingRow)
 """
@@ -19,6 +21,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from event_driven_rag_service.exceptions import EmbeddingUnavailableError
 from event_driven_rag_service.tasks.embed_task import EmbedTask
 from event_driven_rag_service.handlers.embed_handler import EmbedHandler
 from tests.utils.factories import FakeEventBus
@@ -286,6 +289,80 @@ async def test_embed_chunks_fails_entire_batch_on_encode_error():
 
     assert ok_tasks == []
     assert failed_tasks == [task]
+
+
+# ---------------------------------------------------------------------------
+# No backend available — skip, don't DLQ
+# ---------------------------------------------------------------------------
+
+def _unavailable_model():
+    """A model whose encode() reports that no permitted leg can serve it.
+
+    This is what _NoLocalFallback raises when the remote endpoint is down and
+    the config says allow_local=False.
+    """
+    model = MagicMock()
+    model.name = "Qwen/Qwen3-Embedding-4B"
+    model.encode.side_effect = EmbeddingUnavailableError(
+        "Remote embedding unavailable and local embedding is disabled"
+    )
+    return model
+
+
+@pytest.mark.asyncio
+async def test_embed_chunks_skips_batch_when_no_backend_is_available():
+    """A remote outage on a remote-only model must not fill the DLQ.
+
+    The chunk rows already exist with embedding IS NULL, so acking leaves the
+    work recoverable by POST /maintenance/requeue-missing-embeddings once the
+    endpoint is back. Nacking instead would strand every message from the
+    outage window in the dead-letter queue awaiting a manual replay.
+    """
+    chunks_by_id = {"chunk-1": "Text 1"}
+    handler, _, store, bus = _make_handler(chunks_by_id)
+
+    task = EmbedTask(
+        task_id="task-1",
+        task_type="chunk",
+        post_id=1,
+        post_table="posts",
+        chunk_ids=["chunk-1"],
+        chunk_table="chunks_summary_title_qwen_qwen3_embedding_4b",
+        model_name="Qwen/Qwen3-Embedding-4B",
+    )
+    model = _unavailable_model()
+
+    ok_tasks, failed_tasks = await handler.embed_chunks([task], model.name, model)
+
+    assert ok_tasks == [task], "task should be acked, not dead-lettered"
+    assert failed_tasks == []
+    # Nothing persisted and nothing announced — the chunk is still unembedded,
+    # which is exactly what the backfill scan looks for.
+    assert store.saved_rows == []
+    assert bus.drain_topic("embedding.completed") == []
+
+
+@pytest.mark.asyncio
+async def test_embed_query_fails_when_no_backend_is_available():
+    """A query has no persisted row to backfill, so it stays a failure."""
+    handler, _, _, _ = _make_handler({})
+
+    task = EmbedTask(
+        task_id="task-query",
+        task_type="query",
+        post_id=None,
+        post_table=None,
+        chunk_ids=[],
+        chunk_table=None,
+        model_name="Qwen/Qwen3-Embedding-4B",
+        query="Query text",
+        query_job_id="job-unavailable",
+    )
+    model = _unavailable_model()
+
+    result = await handler.embed_query(task, model.name, model)
+
+    assert result is False
 
 
 # ---------------------------------------------------------------------------

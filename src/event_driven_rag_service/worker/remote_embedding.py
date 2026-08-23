@@ -321,8 +321,8 @@ def build_fallback_model(
 
     ``remote_model_name`` is the model id to send to the remote endpoint — this
     differs from ``local.name`` whenever the remote serves the model under its
-    own slug, or where the local leg is a differently-packaged build (a GGUF
-    file) of the same logical model.
+    own slug. Both legs load the same safetensors checkpoint at the same
+    precision; only the wire id differs.
 
     ``quantization`` is forwarded on the model-load call so the server loads at
     the precision this pipeline's config asks for, rather than only its own

@@ -30,6 +30,10 @@ dependencies = [
     # Embeddings (GPU worker)
     "sentence-transformers>=3.0",
     "torch>=2.2",
+    # int8 weights for models whose EmbedConfig asks for it. CUDA-only at load
+    # time; on a CPU-only box gpu.py logs and loads at full precision instead,
+    # so this being installed-but-unused is the normal case off the GPU host.
+    "bitsandbytes>=0.43",
     "httpx>=0.27",      # remote (OpenAI-compatible) embedding endpoint client
 
     # Utilities
@@ -57,15 +61,6 @@ dev = [
     "ruff>=0.4",
     "mypy>=1.10",
 ]
-# Local fallback for GGUF-only models (e.g. Qwen3-Embedding). Only the GPU
-# worker needs this — it's a slow C++ build and unused by every other
-# service, so it's opt-in rather than a base dependency. Missing it is
-# handled gracefully: gpu.py catches the ImportError and falls back to the
-# SentenceTransformer/mock legs (see worker/entrypoints/gpu.py).
-gguf = [
-    "llama-cpp-python>=0.3",
-]
-
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"

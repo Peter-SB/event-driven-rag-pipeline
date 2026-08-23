@@ -129,9 +129,10 @@ load raises, the service logs a warning and reloads at full precision — a slow
 model beats a 503, since the pipeline's own local fallback should be the last
 resort rather than the first.
 
-**Safetensors, not GGUF.** The pipeline's *local* fallback leg loads
-`Qwen/Qwen3-Embedding-0.6B-GGUF` through llama-cpp-python; this service uses the
-plain safetensors repo through transformers. Same model, different packaging.
+**Same artifact on both legs.** The pipeline's *local* fallback leg loads the
+same safetensors repo, at the same precision, through the same bitsandbytes
+path — see `EmbedConfig.quantization`. A batch that falls back mid-run is
+therefore comparable with the ones around it in the pgvector column.
 
 ---
 
