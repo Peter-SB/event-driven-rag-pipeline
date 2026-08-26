@@ -160,11 +160,14 @@ def _load_local_model(model_name: str) -> Any:
 
     Deliberately the same mechanism as the remote leg
     (``remote_embedder_service.manager.default_loader``): SentenceTransformer
-    over the canonical safetensors weights, with int8 applied through
-    bitsandbytes when ``EmbedConfig.quantization`` asks for it. Both legs
-    therefore read the same config field and produce vectors from the same
-    checkpoint at the same precision — a batch that falls back mid-run stays
-    comparable with the ones around it in the pgvector column.
+    over the canonical safetensors weights, with int8 applied when
+    ``EmbedConfig.quantization`` asks for it — via bitsandbytes on CUDA, or
+    PyTorch dynamic quantization on CPU (see ``_quantize_dynamic_cpu``; the two
+    are not numerically identical, see its docstring). Both legs read the same
+    config field and produce vectors from the same checkpoint at the same
+    *requested* precision — but a batch that falls back mid-run between a CUDA
+    box and a CPU box will not be bit-identical, only close enough for
+    retrieval.
 
     Set MOCK_EMBEDDINGS=1 for local development without a GPU.
     """
@@ -177,8 +180,25 @@ def _load_local_model(model_name: str) -> Any:
     return _load_sentence_transformer(model_name, quantization)
 
 
+def _quantize_dynamic_cpu(model: Any) -> Any:
+    """Apply PyTorch dynamic int8 quantization to a SentenceTransformer's Linear layers.
+
+    CPU stand-in for bitsandbytes' ``load_in_8bit`` (CUDA-only): weights are
+    quantised to qint8 at load time, activations are quantised on the fly per
+    forward pass. No calibration step, unlike static/ONNX quantization — the
+    tradeoff is smaller speedups (mainly memory-bandwidth bound, so it helps
+    most on the Linear-heavy encoder layers) and a small accuracy hit
+    ``EmbedConfig.quantization`` accepts on purpose for this leg.
+    """
+    import torch
+    from torch.ao.quantization import quantize_dynamic
+
+    return quantize_dynamic(model, {torch.nn.Linear}, dtype=torch.qint8)
+
+
 def _load_sentence_transformer(model_name: str, quantization: str | None) -> Any:
-    """SentenceTransformer load, optionally in int8 via bitsandbytes.
+    """SentenceTransformer load, optionally in int8 (bitsandbytes on CUDA,
+    PyTorch dynamic quantization on CPU).
 
     A quantised load that fails is retried at full precision: bitsandbytes may
     be missing on a box that only ever expected to be the fallback leg, and a
@@ -194,20 +214,12 @@ def _load_sentence_transformer(model_name: str, quantization: str | None) -> Any
 
     device = _resolve_device()
     want_int8 = _wants_int8(quantization, model_name)
-    if want_int8 and device != "cuda":
-        # int8 here is bitsandbytes' load_in_8bit, which is a CUDA path. Not a
-        # failure, but a model the config expects to be small is about to load
-        # full-size, which is worth flagging up front rather than only showing
-        # up as a surprisingly slow first batch.
-        logger.warning(
-            "%r requests int8 but no CUDA device is visible — loading at full "
-            "precision on CPU instead",
-            model_name,
-        )
-        want_int8 = False
+    # bitsandbytes' load_in_8bit is a CUDA kernel path; on CPU we get int8
+    # via PyTorch's own dynamic quantization instead (see _quantize_dynamic_cpu).
+    cpu_dynamic = want_int8 and device != "cuda"
 
     def _build(quantised: bool) -> Any:
-        if quantised:
+        if quantised and not cpu_dynamic:
             from transformers import BitsAndBytesConfig
 
             # accelerate places the (already-quantised) weights, so device_map
@@ -220,21 +232,27 @@ def _load_sentence_transformer(model_name: str, quantization: str | None) -> Any
                     "device_map": "auto",
                 },
             )
-        return SentenceTransformer(model_name, trust_remote_code=True, device=device)
+        model = SentenceTransformer(model_name, trust_remote_code=True, device=device)
+        if quantised and cpu_dynamic:
+            model = _quantize_dynamic_cpu(model)
+        return model
 
     load_start = time.time()
     precision = "full precision"
     st_model = None
     if want_int8:
-        logger.info("Loading SentenceTransformer %s in int8 on %s", model_name, device)
+        backend = "dynamic/cpu" if cpu_dynamic else "bitsandbytes/cuda"
+        logger.info(
+            "Loading SentenceTransformer %s in int8 (%s) on %s", model_name, backend, device
+        )
         try:
             st_model = _build(quantised=True)
-            precision = "int8"
+            precision = f"int8 ({backend})"
         except Exception:
             logger.warning(
-                "int8 load failed for %r — retrying at full precision "
-                "(is bitsandbytes installed?)",
+                "int8 load failed for %r via %s — retrying at full precision",
                 model_name,
+                backend,
                 exc_info=True,
             )
 

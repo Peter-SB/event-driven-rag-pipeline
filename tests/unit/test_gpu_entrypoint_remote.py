@@ -17,9 +17,9 @@ Tested behaviours
   embedding on the CPU (``EmbedHandler`` turns that into a skip for the
   backfill endpoint), and the combination of both flags off is a startup error
   rather than a runtime one.
-- The local leg honours ``EmbedConfig.quantization`` through bitsandbytes, the
-  same field and the same mechanism the remote leg uses, so a batch that falls
-  back mid-run is not silently a different precision.
+- The local leg honours ``EmbedConfig.quantization``: bitsandbytes on CUDA,
+  PyTorch dynamic quantization on CPU. Same config field the remote leg uses,
+  so a batch that falls back mid-run is not silently full precision.
 - ``quantization`` from the config reaches the remote client, so precision is
   declared in one place rather than separately on each side.
 - Coverage: the routing decision is checked for *every* EMBED_CONFIGS entry,
@@ -265,19 +265,44 @@ def test_local_load_applies_int8_via_bitsandbytes_on_cuda(
     assert "device" not in kwargs
 
 
-def test_local_load_falls_back_to_full_precision_without_cuda(
+def test_local_load_applies_dynamic_quantization_without_cuda(
     fake_sentence_transformer, monkeypatch
 ):
-    """int8 via bitsandbytes is a CUDA path. On a CPU-only box the load must
-    still succeed at full precision rather than refusing — this leg exists
-    precisely for when the GPU box is unreachable."""
+    """int8 via bitsandbytes is a CUDA path. On a CPU-only box `quantization="int8"`
+    must still produce an int8 model — via PyTorch dynamic quantization — rather
+    than silently loading full precision, since a CPU box is exactly where the
+    memory/throughput win matters most."""
     monkeypatch.setattr(gpu_entrypoint, "_resolve_device", lambda: "cpu")
+    calls = []
+    monkeypatch.setattr(
+        gpu_entrypoint,
+        "_quantize_dynamic_cpu",
+        lambda model: calls.append(model) or model,
+    )
 
     gpu_entrypoint._load_sentence_transformer("Qwen/Qwen3-Embedding-0.6B", "int8")
 
     kwargs = fake_sentence_transformer.last_kwargs
     assert "model_kwargs" not in kwargs
     assert kwargs["device"] == "cpu"
+    assert len(calls) == 1, "dynamic quantization must be applied on the CPU leg"
+
+
+def test_local_load_retries_at_full_precision_when_dynamic_quant_fails(
+    fake_sentence_transformer, monkeypatch
+):
+    """PyTorch dynamic quantization can fail on an unusual module tree; a
+    slower model beats a worker that cannot embed at all."""
+    monkeypatch.setattr(gpu_entrypoint, "_resolve_device", lambda: "cpu")
+
+    def _boom(model):
+        raise RuntimeError("quantize_dynamic exploded")
+
+    monkeypatch.setattr(gpu_entrypoint, "_quantize_dynamic_cpu", _boom)
+
+    model = gpu_entrypoint._load_sentence_transformer("Qwen/Qwen3-Embedding-0.6B", "int8")
+
+    assert model.name == "Qwen/Qwen3-Embedding-0.6B"
 
 
 def test_local_load_retries_at_full_precision_when_int8_load_fails(monkeypatch):
