@@ -1,8 +1,12 @@
 """Business logic for SearchRunTask processing.
 
 SearchHandler is the single unit of work here.  It reads the job's stored
-query embedding, executes a pgvector ANN search against the chunk table,
-persists results, and fires ``search_job.completed``.
+query embedding, executes a pgvector ANN search against the chunk table for a
+candidate pool, and always announces ``search_candidates.retrieved`` —
+whether or not the job asked for reranking. That keeps the event log uniform
+across both branches: SearchDispatcher decides from ``event.rerank`` whether
+to route to SearchRankTask (GPU rerank) or SearchFinalizeTask (CPU truncate),
+but SearchHandler itself doesn't special-case either path.
 
 Separated from CpuSearchWorker so it can be unit-tested without RabbitMQ.
 
@@ -19,7 +23,10 @@ from typing import Any, Dict, List, Protocol
 
 from opentelemetry import trace
 
-from event_driven_rag_service.events.search_events import SearchJobCompletedEvent
+from event_driven_rag_service.events.search_events import (
+    CandidateChunkRef,
+    SearchCandidatesRetrievedEvent,
+)
 from event_driven_rag_service.infrastructure.event_bus import EventBusBase
 from event_driven_rag_service.infrastructure.metrics import (
     record_search_job_completed,
@@ -60,7 +67,7 @@ class SearchHandler:
     ----------
     job_store      : fetch job metadata and persist results
     chunk_searcher : execute pgvector ANN search against a chunk table
-    event_log      : emit ``search_job.completed`` on success
+    event_log      : emit ``search_candidates.retrieved`` on success
     """
 
     def __init__(
@@ -103,37 +110,44 @@ class SearchHandler:
 
             await self._jobs.mark_searching(task.job_id)
 
+            k = job["k"]
+            rerank = bool(job.get("rerank", False))
+            rerank_profile = job.get("rerank_profile")
+            # Overfetch a candidate pool for rerank to have something to
+            # re-order — a fixed 3x multiplier, no floor/ceiling. When
+            # rerank is off this still returns exactly k (harmless no-op
+            # multiply), so the ANN query itself doesn't need to branch.
+            candidate_pool = k * 3 if rerank else k
+
             try:
                 raw = await self._chunks.search_nearest(
-                    job["chunks_table"], embedding, job["k"]
+                    job["chunks_table"], embedding, candidate_pool
                 )
-                results = [
-                    {
-                        "chunk_id": row["id"],
-                        "post_id": row["post_id"],
-                        "text": row["text"],
-                        "metadata": row.get("metadata"),
-                        "score": row["score"],
-                    }
+                candidates = [
+                    CandidateChunkRef(chunk_id=row["id"], score=row["score"])
                     for row in raw
                 ]
-                await self._jobs.complete_job(task.job_id, results)
 
-                event = SearchJobCompletedEvent(
+                event = SearchCandidatesRetrievedEvent(
                     query_job_id=task.job_id,
+                    candidates=candidates,
+                    k=k,
+                    rerank=rerank,
+                    rerank_profile=rerank_profile,
                     trace_id=task.trace_id,
                 )
                 await self._event_log.publish(event.event_type, event.to_dict())
 
-                span.set_attribute("result_count", len(results))
-                record_search_job_completed("completed")
+                span.set_attribute("candidate_count", len(candidates))
+                span.set_attribute("rerank", rerank)
                 record_search_latency(time.time() - start_time)
 
                 logger.info(
-                    "SearchHandler: job %s complete — %d results from %s",
+                    "SearchHandler: job %s — %d candidates from %s (rerank=%s)",
                     task.job_id,
-                    len(results),
+                    len(candidates),
                     job["chunks_table"],
+                    rerank,
                 )
 
             except Exception as exc:

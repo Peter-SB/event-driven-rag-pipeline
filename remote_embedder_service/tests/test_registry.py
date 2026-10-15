@@ -25,7 +25,7 @@ from pathlib import Path
 import pytest
 
 from remote_embedder.manager import _QUANT_INT8, _QUANT_OFF, resolve_quantization
-from remote_embedder.registry import MODEL_REGISTRY, all_specs, get_spec
+from remote_embedder.registry import MODEL_REGISTRY, all_specs, embed_specs, get_spec
 
 PIPELINE_CONFIG = (
     Path(__file__).resolve().parents[2]
@@ -33,6 +33,14 @@ PIPELINE_CONFIG = (
     / "event_driven_rag_service"
     / "config"
     / "embedding_config.py"
+)
+
+PIPELINE_RERANK_CONFIG = (
+    Path(__file__).resolve().parents[2]
+    / "src"
+    / "event_driven_rag_service"
+    / "config"
+    / "reranking_config.py"
 )
 
 
@@ -62,6 +70,29 @@ def _pipeline_embed_configs() -> list[dict]:
     return configs
 
 
+def _pipeline_rerank_configs() -> list[dict]:
+    """Extract every RerankConfig(...) literal from the pipeline's config
+    module. Same static-parse approach and rationale as _pipeline_embed_configs."""
+    tree = ast.parse(PIPELINE_RERANK_CONFIG.read_text(encoding="utf-8"))
+    configs = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not (isinstance(func, ast.Name) and func.id == "RerankConfig"):
+            continue
+        entry = {}
+        for kw in node.keywords:
+            if kw.arg is None:
+                continue
+            try:
+                entry[kw.arg] = ast.literal_eval(kw.value)
+            except ValueError:
+                entry[kw.arg] = None
+        configs.append(entry)
+    return configs
+
+
 # --- registry internals ----------------------------------------------------
 
 
@@ -70,8 +101,10 @@ def test_registry_keys_match_spec_ids():
         assert key == spec.id
 
 
-def test_dims_are_positive():
-    assert all(spec.dim > 0 for spec in all_specs())
+def test_embed_dims_are_positive():
+    """dim is only meaningful for embedders — a reranker's scalar score has
+    no width, so rerank specs are exempt (see ModelSpec.dim's docstring)."""
+    assert all(spec.dim > 0 for spec in embed_specs())
 
 
 def test_no_gguf_repos():
@@ -146,3 +179,37 @@ def test_quantization_requests_are_understood(cfg):
     assert resolve_quantization(spec, requested) is (
         requested.strip().lower() in _QUANT_INT8
     )
+
+
+# --- agreement with the pipeline's RERANK_CONFIGS --------------------------
+
+
+def test_pipeline_rerank_config_is_readable():
+    assert PIPELINE_RERANK_CONFIG.exists(), f"expected pipeline config at {PIPELINE_RERANK_CONFIG}"
+    assert _pipeline_rerank_configs(), "no RerankConfig(...) literals parsed"
+
+
+def test_every_pipeline_rerank_remote_model_is_servable():
+    """A `remote_model` the registry doesn't serve means the GPU worker asks
+    for a reranker this service will 400/404 on, and silently reranks
+    locally forever."""
+    missing = [
+        cfg["remote_model"]
+        for cfg in _pipeline_rerank_configs()
+        if cfg.get("remote_model") and cfg["remote_model"] not in MODEL_REGISTRY
+    ]
+    assert not missing, f"pipeline requests rerankers this service does not serve: {missing}"
+
+
+def test_pipeline_rerank_remote_models_are_registered_as_rerank_kind():
+    """A pipeline RerankConfig.remote_model that resolves to a kind="embed"
+    entry would get routed through /v1/embeddings by mistake if the wire ids
+    ever collided — assert they're on the rerank side of the registry."""
+    for cfg in _pipeline_rerank_configs():
+        remote_model = cfg.get("remote_model")
+        if not remote_model:
+            continue
+        spec = MODEL_REGISTRY.get(remote_model)
+        assert spec is not None and spec.kind == "rerank", (
+            f"{remote_model}: expected a kind='rerank' registry entry, got {spec!r}"
+        )

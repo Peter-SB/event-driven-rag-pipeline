@@ -43,26 +43,42 @@ class ModelLoadError(RuntimeError):
 
 
 # Accepted spellings for the optional `quantization` field on a load request.
-# The pipeline sends EmbedConfig.quantization verbatim, and hand-driven curl
-# tends to reach for whichever synonym comes to mind first.
+# The pipeline sends EmbedConfig.quantization / RerankConfig.quantization
+# verbatim, and hand-driven curl tends to reach for whichever synonym comes
+# to mind first.
 _QUANT_INT8 = {"int8", "8bit", "8-bit", "q8", "q8_0"}
+_QUANT_INT4 = {"int4", "4bit", "4-bit", "q4", "nf4"}
 _QUANT_OFF = {"none", "off", "full", "fp16", "float16", "fp32", "float32"}
 
 
+def _quant_label(spec: ModelSpec) -> str:
+    """The precision string a quantised load of `spec` is reported as —
+    "int4" for a reranker (nf4/bitsandbytes 4-bit), "int8" for an embedder
+    (LLM.int8/bitsandbytes 8-bit). Only meaningful when `spec.quantize` (or an
+    override) actually applies."""
+    return "int4" if spec.kind == "rerank" else "int8"
+
+
 def resolve_quantization(spec: ModelSpec, requested: str | None) -> bool:
-    """Whether to load ``spec`` in int8, given an optional client request.
+    """Whether to load ``spec`` quantised (int8 for an embedder, int4 for a
+    reranker — see `_quant_label`), given an optional client request.
 
     The registry entry is the default; a request overrides it in either
-    direction. An unrecognised value falls back to the default rather than
-    failing the load — the client treats *any* non-2xx as "use the local
-    fallback for this batch", so refusing here would trade a precision
-    mismatch for no remote embedding at all.
+    direction. Only the vocabulary for *this spec's own kind* counts as
+    "quantise" — e.g. "int8" against a reranker is not recognised, since the
+    reranker loader only ever applies int4/nf4 and reporting int8 back would
+    be a straight lie about what was actually loaded. An unrecognised value
+    (wrong family or genuinely unknown) falls back to the registry default
+    rather than failing the load — the client treats any non-2xx as "use the
+    local fallback for this batch", so refusing here would trade a precision
+    mismatch for no remote embedding/reranking at all.
     """
     if requested is None:
         return spec.quantize
 
     value = requested.strip().lower()
-    if value in _QUANT_INT8:
+    quant_vocab = _QUANT_INT4 if spec.kind == "rerank" else _QUANT_INT8
+    if value in quant_vocab:
         return True
     if value in _QUANT_OFF:
         return False
@@ -71,7 +87,7 @@ def resolve_quantization(spec: ModelSpec, requested: str | None) -> bool:
         "Unrecognised quantization %r for %r — using the registry default (%s)",
         requested,
         spec.id,
-        "int8" if spec.quantize else "full precision",
+        _quant_label(spec) if spec.quantize else "full precision",
     )
     return spec.quantize
 
@@ -82,11 +98,25 @@ class Encoder(Protocol):
     def encode(self, texts: list[str], **kwargs: Any) -> Any: ...
 
 
-# A loader turns a spec into an encoder. Injectable so tests never touch torch.
-LoaderFn = Callable[[ModelSpec, Settings], "Encoder"]
+class Reranker(Protocol):
+    """A loaded reranker's work method — see _load_reranker's _RerankerEncoder."""
+
+    def score(self, query: str, documents: list[str]) -> list[float]: ...
 
 
-def default_loader(spec: ModelSpec, settings: Settings) -> Encoder:
+# A loader turns a spec into an encoder or reranker (by spec.kind). Injectable
+# so tests never touch torch.
+LoaderFn = Callable[[ModelSpec, Settings], "Encoder | Reranker"]
+
+
+def default_loader(spec: ModelSpec, settings: Settings) -> "Encoder | Reranker":
+    """Dispatch to the embedding or reranking loader, by `spec.kind`."""
+    if spec.kind == "rerank":
+        return _load_reranker(spec, settings)
+    return _load_embedder(spec, settings)
+
+
+def _load_embedder(spec: ModelSpec, settings: Settings) -> Encoder:
     """Load a SentenceTransformer, applying int8 quantisation when asked for.
 
     Falls back to non-quantised loading if bitsandbytes is unavailable or the
@@ -143,6 +173,132 @@ def default_loader(spec: ModelSpec, settings: Settings) -> Encoder:
     return _build(quantised=False)
 
 
+# Qwen3-Reranker's documented prompt template (from its model card): a causal
+# LM fine-tuned to answer "yes"/"no" to a judgement prompt. Relevance is read
+# off as P(yes) via a softmax over just the "yes"/"no" logits at the final
+# position — duplicated from worker/entrypoints/gpu.py's identical local
+# loader (this service must not import the pipeline package — see
+# tests/test_registry.py's docstring on why the two sides agree by convention
+# only).
+_QWEN3_RERANK_SYSTEM_PREFIX = (
+    "<|im_start|>system\n"
+    "Judge whether the Document meets the requirements based on the Query "
+    "and the Instruct provided. Note that the answer can only be \"yes\" or \"no\".<|im_end|>\n"
+    "<|im_start|>user\n"
+)
+_QWEN3_RERANK_SUFFIX = "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+_QWEN3_RERANK_DEFAULT_INSTRUCTION = (
+    "Given a web search query, retrieve relevant passages that answer the query"
+)
+_QWEN3_RERANK_MAX_LENGTH = 8192
+
+
+def _load_reranker(spec: ModelSpec, settings: Settings) -> Reranker:
+    """Load a Qwen3-Reranker checkpoint via transformers (AutoModelForCausalLM),
+    in int4 (nf4) via bitsandbytes when asked for and CUDA is available.
+
+    No CPU quantised fallback — bitsandbytes 4-bit is CUDA-only. A CPU box
+    loads full precision, same "slower beats down" trade-off as _load_embedder.
+    """
+    import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    device = settings.resolved_device()
+    if spec.quantize and settings.enable_quantization and device != "cuda":
+        logger.warning(
+            "%r is registered for int4 quantisation but device=%r — "
+            "loading at full precision instead",
+            spec.id,
+            device,
+        )
+    want_quant = spec.quantize and settings.enable_quantization and device == "cuda"
+
+    def _build(quantised: bool):
+        kwargs: dict[str, Any] = {}
+        if quantised:
+            from transformers import BitsAndBytesConfig
+
+            kwargs["quantization_config"] = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=torch.bfloat16,
+            )
+            kwargs["device_map"] = "auto"
+        else:
+            kwargs["device_map"] = device if device == "cuda" else None
+        model = AutoModelForCausalLM.from_pretrained(spec.repo_id, **kwargs)
+        return model.eval()
+
+    if want_quant:
+        try:
+            logger.info("Loading %s (%s) in int4 on %s", spec.id, spec.repo_id, device)
+            model = _build(quantised=True)
+        except Exception:
+            logger.warning(
+                "int4 load failed for %r — retrying at full precision "
+                "(is bitsandbytes installed?)",
+                spec.id,
+                exc_info=True,
+            )
+            model = _build(quantised=False)
+            if device != "cuda":
+                model = model.to(device)
+    else:
+        logger.info("Loading %s (%s) on %s", spec.id, spec.repo_id, device)
+        model = _build(quantised=False)
+        if device != "cuda":
+            model = model.to(device)
+
+    tokenizer = AutoTokenizer.from_pretrained(spec.repo_id, padding_side="left")
+    return _RerankerEncoder(model, tokenizer)
+
+
+class _RerankerEncoder:
+    """Wraps a Qwen3-Reranker causal LM behind `.score()` — the Reranker protocol.
+
+    No `.encode()` — a reranker produces a scalar relevance score, not a
+    fixed-width vector, so ModelManager._verify_dim's dimension probe (built
+    for pgvector-bound embedding output) is skipped entirely for kind="rerank"
+    rather than adapted to it.
+    """
+
+    def __init__(self, model: Any, tokenizer: Any) -> None:
+        self._model = model
+        self._tokenizer = tokenizer
+        self._token_false_id = tokenizer.convert_tokens_to_ids("no")
+        self._token_true_id = tokenizer.convert_tokens_to_ids("yes")
+        self._prefix_tokens = tokenizer.encode(_QWEN3_RERANK_SYSTEM_PREFIX, add_special_tokens=False)
+        self._suffix_tokens = tokenizer.encode(_QWEN3_RERANK_SUFFIX, add_special_tokens=False)
+
+    def score(self, query: str, documents: list[str]) -> list[float]:
+        import torch
+
+        pairs = [
+            f"<Instruct>: {_QWEN3_RERANK_DEFAULT_INSTRUCTION}\n<Query>: {query}\n<Document>: {doc}"
+            for doc in documents
+        ]
+        budget = _QWEN3_RERANK_MAX_LENGTH - len(self._prefix_tokens) - len(self._suffix_tokens)
+        inputs = self._tokenizer(
+            pairs, padding=False, truncation="longest_first",
+            return_attention_mask=False, max_length=budget,
+        )
+        for i, ids in enumerate(inputs["input_ids"]):
+            inputs["input_ids"][i] = self._prefix_tokens + ids + self._suffix_tokens
+        # max_length already applied above (at encode time, before the prefix/
+        # suffix were spliced in) — here padding=True just pads to the batch's
+        # own longest sequence, so passing max_length again is a no-op transformers warns about.
+        inputs = self._tokenizer.pad(inputs, padding=True, return_tensors="pt")
+        inputs = {k: v.to(self._model.device) for k, v in inputs.items()}
+
+        with torch.no_grad():
+            logits = self._model(**inputs).logits[:, -1, :]
+            true_vec = logits[:, self._token_true_id]
+            false_vec = logits[:, self._token_false_id]
+            stacked = torch.stack([false_vec, true_vec], dim=1)
+            log_probs = torch.nn.functional.log_softmax(stacked, dim=1)
+            return log_probs[:, 1].exp().tolist()
+
+
 class ModelManager:
     """Loads, serves and evicts one embedding model."""
 
@@ -156,7 +312,7 @@ class ModelManager:
         self._loader = loader
         self._clock = clock
         self._lock = threading.RLock()
-        self._model: Encoder | None = None
+        self._model: Encoder | Reranker | None = None
         self._model_id: str | None = None
         # Precision the resident model was actually loaded at, which can differ
         # from its registry default when a client requested an override.
@@ -180,9 +336,10 @@ class ModelManager:
     def applied_quantization(self) -> str | None:
         """Precision the resident model is actually loaded at, or None when
         nothing is resident or it is full precision."""
-        if self._model_id is None:
+        if self._model_id is None or not self._quantized:
             return None
-        return "int8" if self._quantized else None
+        spec = get_spec(self._model_id)
+        return _quant_label(spec) if spec is not None else "int8"
 
     def is_loaded(self, model_id: str) -> bool:
         return self._model_id == model_id
@@ -209,7 +366,7 @@ class ModelManager:
                 "quantization": (
                     self.applied_quantization
                     if spec.id == loaded
-                    else ("int8" if spec.quantize else None)
+                    else (_quant_label(spec) if spec.quantize else None)
                 ),
                 "max_context_length": spec.max_seq_length,
             }
@@ -234,11 +391,12 @@ class ModelManager:
         if base is None:
             raise UnknownModelError(model_id)
 
-        want_int8 = resolve_quantization(base, quantization)
-        spec = replace(base, quantize=want_int8)
+        want_quant = resolve_quantization(base, quantization)
+        spec = replace(base, quantize=want_quant)
+        quant_label = _quant_label(spec)
 
         with self._lock:
-            if self._model_id == model_id and self._quantized == want_int8:
+            if self._model_id == model_id and self._quantized == want_quant:
                 self._touch()
                 return spec
 
@@ -246,8 +404,8 @@ class ModelManager:
                 logger.info(
                     "Reloading %s at %s (was %s)",
                     model_id,
-                    "int8" if want_int8 else "full precision",
-                    "int8" if self._quantized else "full precision",
+                    quant_label if want_quant else "full precision",
+                    quant_label if self._quantized else "full precision",
                 )
                 self._release()
 
@@ -260,16 +418,18 @@ class ModelManager:
             except Exception as exc:
                 raise ModelLoadError(f"failed to load {model_id!r}: {exc}") from exc
 
-            self._verify_dim(spec, model)
+            if spec.kind == "embed":
+                self._verify_dim(spec, model)
 
             self._model = model
             self._model_id = model_id
-            self._quantized = want_int8
+            self._quantized = want_quant
             self._touch()
             logger.info(
-                "Model loaded: %s (dim=%d quantization=%s)",
+                "Model loaded: %s (kind=%s dim=%s quantization=%s)",
                 model_id,
-                spec.dim,
+                spec.kind,
+                spec.dim if spec.kind == "embed" else "n/a",
                 self.applied_quantization or "full precision",
             )
             return spec
@@ -280,6 +440,8 @@ class ModelManager:
         Cheap (one short forward pass) and worth it: these vectors land in a
         fixed-width pgvector column, so a repo revision that changed dimension
         would otherwise surface as opaque insert failures deep in the pipeline.
+        Only called for kind="embed" — a reranker's scalar score has no width
+        to verify (see `load()`).
         """
         try:
             probe = _to_lists(model.encode(["dimension probe"]))
@@ -332,6 +494,11 @@ class ModelManager:
         spec = get_spec(model_id)
         if spec is None:
             raise UnknownModelError(model_id)
+        if spec.kind != "embed":
+            raise UnknownModelError(
+                f"{model_id!r} is a kind={spec.kind!r} model — POST /v1/embeddings "
+                "only serves kind='embed' models. Use POST /rerank instead."
+            )
         if not texts:
             return []
 
@@ -365,6 +532,46 @@ class ModelManager:
                 f"{model_id!r} returned {len(vectors)} vectors for {len(texts)} inputs"
             )
         return vectors
+
+    def rerank(self, model_id: str, query: str, documents: list[str]) -> list[float]:
+        """Score ``documents`` against ``query``, loading the model on demand.
+
+        Unlike encode(), there is no sub-batching here — a rerank call already
+        scores the whole candidate pool for one query in a single forward pass
+        (the GPU worker bounds pool size via RerankConfig.max_batch before this
+        is ever called), so splitting further would only add overhead.
+        """
+        spec = get_spec(model_id)
+        if spec is None:
+            raise UnknownModelError(model_id)
+        if spec.kind != "rerank":
+            raise UnknownModelError(
+                f"{model_id!r} is a kind={spec.kind!r} model — POST /rerank only "
+                "serves kind='rerank' models. Use POST /v1/embeddings instead."
+            )
+        if not documents:
+            return []
+
+        started = self._clock()
+        with self._lock:
+            if self._model_id != model_id:
+                self.load(model_id)
+            model = self._model
+            assert model is not None  # load() sets it or raises
+
+            scores = list(model.score(query, documents))
+            self._touch()
+
+        logger.info(
+            "Reranked %d documents with model %s. Took %.2fs",
+            len(documents), model_id, self._clock() - started,
+        )
+
+        if len(scores) != len(documents):
+            raise ModelLoadError(
+                f"{model_id!r} returned {len(scores)} scores for {len(documents)} documents"
+            )
+        return scores
 
     # --- idle reaping -----------------------------------------------------
 

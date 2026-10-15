@@ -48,6 +48,7 @@ async def submit_search(
     library_id: str = Form("main"),
     chunk_type: str = Form("body"),
     k: int = Form(10),
+    rerank: bool = Form(False),
 ) -> HTMLResponse:
     if not re.match(r"^[a-z][a-z0-9_]*$", library_id):
         return HTMLResponse(
@@ -62,6 +63,10 @@ async def submit_search(
 
     job_repo: SearchJobRepository = request.app.state.search_job_repo
     event_bus = request.app.state.event_bus
+
+    # "Advanced (rerank)" checkbox: unchecked (the default) never reaches the
+    # rerank path. Checked uses the "default" profile from RERANK_CONFIGS.
+    rerank_profile = "default" if rerank else None
 
     embed_cfg = EMBED_CONFIGS[chunk_type]
     chunks_table = build_chunk_table_name(f"posts_{library_id}", chunk_type, embed_cfg.primary)
@@ -80,9 +85,17 @@ async def submit_search(
         embedding_profile=embed_cfg.primary,
         chunks_table=chunks_table,
         library_id=library_id,
+        rerank=rerank,
+        rerank_profile=rerank_profile,
     )
 
-    event = SearchJobCreatedEvent(query_job_id=job_id, query=query, embedding_profile=embed_cfg.primary)
+    event = SearchJobCreatedEvent(
+        query_job_id=job_id,
+        query=query,
+        embedding_profile=embed_cfg.primary,
+        rerank=rerank,
+        rerank_profile=rerank_profile,
+    )
     await event_bus.publish(event.event_type, event.to_dict())
 
     logger.info("ui: created search job %s query=%r library=%s", job_id, query, library_id)
@@ -96,6 +109,7 @@ async def submit_search(
         "status": "embedding",
         "created_at": datetime.now(timezone.utc).strftime("%H:%M:%S"),
         "result_count": None,
+        "rerank": rerank,
     })
 
 
@@ -129,6 +143,7 @@ async def job_status(job_id: str, request: Request) -> HTMLResponse:
         "status": job["status"],
         "created_at": created_at,
         "result_count": result_count,
+        "rerank": bool(job.get("rerank", False)),
     })
 
 

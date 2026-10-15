@@ -24,8 +24,10 @@ POST_ANALYSED = "post-dispatcher-analysed"   # wired post-MVP for analysis pipel
 CHUNKS_CREATED = "chunk-dispatcher-chunks-created"
 
 # ---------------------------------------------------------------------------
-# SearchDispatcher  (two subscriptions: job created + query embedded)
+# SearchDispatcher  (three subscriptions: job created + query embedded +
+# candidates retrieved)
 # ---------------------------------------------------------------------------
 
-SEARCH_JOB_CREATED    = "search-dispatcher-job-created"
-SEARCH_QUERY_EMBEDDED = "search-dispatcher-query-embedded"
+SEARCH_JOB_CREATED           = "search-dispatcher-job-created"
+SEARCH_QUERY_EMBEDDED        = "search-dispatcher-query-embedded"
+SEARCH_CANDIDATES_RETRIEVED  = "search-dispatcher-candidates-retrieved"

@@ -1,6 +1,8 @@
 """Async Postgres repository for search jobs.
 
-Each job progresses through:  embedding → searching → complete | failed
+Each job progresses through:
+  embedding → searching → complete | failed                 (rerank=False)
+  embedding → searching → reranking → complete | failed     (rerank=True)
 
 The ``search_jobs`` table is created on first use via :meth:`ensure_table`.
 
@@ -28,12 +30,23 @@ CREATE TABLE IF NOT EXISTS search_jobs (
     k               INTEGER      NOT NULL DEFAULT 10,
     embedding_profile TEXT       NOT NULL,
     chunks_table    TEXT         NOT NULL,
+    rerank          BOOLEAN      NOT NULL DEFAULT false,
+    rerank_profile  TEXT,
     embedding       TEXT,
     results         JSONB,
     error           TEXT,
     created_at      TIMESTAMPTZ  DEFAULT now(),
     completed_at    TIMESTAMPTZ
 );
+"""
+
+# CREATE TABLE IF NOT EXISTS is a no-op against a table that already exists, so
+# a deployment whose search_jobs predates reranking would never get these
+# columns and every create_job() INSERT would fail. Defaults keep existing rows
+# and old-code writers valid (rerank=false).
+_ADD_RERANK_COLUMNS_SQL = """
+ALTER TABLE search_jobs ADD COLUMN IF NOT EXISTS rerank BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE search_jobs ADD COLUMN IF NOT EXISTS rerank_profile TEXT;
 """
 
 
@@ -44,9 +57,11 @@ class SearchJobRepository:
         self._pool = pool
 
     async def ensure_table(self) -> None:
-        """Idempotently create the search_jobs table."""
+        """Idempotently create the search_jobs table and bring an existing one
+        up to the current schema."""
         async with self._pool.acquire() as conn:
             await conn.execute(_CREATE_TABLE_SQL)
+            await conn.execute(_ADD_RERANK_COLUMNS_SQL)
         logger.info("SearchJobRepository: search_jobs table ready")
 
     async def create_job(
@@ -56,6 +71,8 @@ class SearchJobRepository:
         embedding_profile: str,
         chunks_table: str,
         library_id: str,
+        rerank: bool = False,
+        rerank_profile: Optional[str] = None,
     ) -> str:
         """Insert a new search job with status='embedding'. Returns the UUID job_id."""
         job_id = str(uuid.uuid4())
@@ -63,12 +80,17 @@ class SearchJobRepository:
             await conn.execute(
                 """
                 INSERT INTO search_jobs
-                    (id, status, library_id, query, k, embedding_profile, chunks_table)
-                VALUES ($1::uuid, 'embedding', $2, $3, $4, $5, $6)
+                    (id, status, library_id, query, k, embedding_profile, chunks_table,
+                     rerank, rerank_profile)
+                VALUES ($1::uuid, 'embedding', $2, $3, $4, $5, $6, $7, $8)
                 """,
                 job_id, library_id, query, k, embedding_profile, chunks_table,
+                rerank, rerank_profile,
             )
-        logger.debug("SearchJobRepository: created job %s library=%s", job_id, library_id)
+        logger.debug(
+            "SearchJobRepository: created job %s library=%s rerank=%s",
+            job_id, library_id, rerank,
+        )
         return job_id
 
     async def get_job(self, job_id: str) -> Optional[Dict[str, Any]]:
@@ -103,6 +125,14 @@ class SearchJobRepository:
         async with self._pool.acquire() as conn:
             await conn.execute(
                 "UPDATE search_jobs SET status = 'searching' WHERE id = $1::uuid",
+                job_id,
+            )
+
+    async def mark_reranking(self, job_id: str) -> None:
+        """Transition job to status='reranking'."""
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE search_jobs SET status = 'reranking' WHERE id = $1::uuid",
                 job_id,
             )
 

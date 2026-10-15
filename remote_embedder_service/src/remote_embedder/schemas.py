@@ -37,6 +37,25 @@ class EmbeddingsResponse(BaseModel):
     usage: Usage = Field(default_factory=Usage)
 
 
+# --- POST /rerank -----------------------------------------------------------
+
+
+class RerankRequest(BaseModel):
+    model: str
+    query: str
+    documents: list[str]
+
+
+class RerankResultItem(BaseModel):
+    index: int  # position in the original `documents` list
+    score: float
+
+
+class RerankResponse(BaseModel):
+    model: str
+    results: list[RerankResultItem]
+
+
 # --- GET /v1/models (OpenAI-compatible) ------------------------------------
 
 

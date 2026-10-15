@@ -91,8 +91,9 @@ def _make_search_result(chunk_id: str = "c1", score: float = 0.9) -> Dict[str, A
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_handle_success_stores_results_and_emits_event():
-    """SearchHandler should mark job as searching, store results, and emit search_job.completed."""
+async def test_handle_success_emits_candidates_retrieved_event():
+    """SearchHandler should mark job as searching and announce candidates —
+    never completes the job itself (that's SearchFinalizeHandler/RerankHandler's job)."""
     job = _make_job()
     fake_results = [_make_search_result("c1", 0.9), _make_search_result("c2", 0.7)]
 
@@ -104,18 +105,46 @@ async def test_handle_success_stores_results_and_emits_event():
     await handler.handle(_make_task("job-1"))
 
     assert job_store.marked_searching == ["job-1"]
-    assert len(job_store.completed) == 1
-    completed_id, results = job_store.completed[0]
-    assert completed_id == "job-1"
-    assert len(results) == 2
-    assert results[0]["chunk_id"] == "c1"
-    assert results[0]["score"] == 0.9
-    assert results[1]["chunk_id"] == "c2"
+    assert job_store.completed == []
 
-    events = bus.drain_topic("search_job.completed")
+    events = bus.drain_topic("search_candidates.retrieved")
     assert len(events) == 1
-    assert events[0]["query_job_id"] == "job-1"
-    assert events[0]["event_type"] == "search_job.completed"
+    event = events[0]
+    assert event["query_job_id"] == "job-1"
+    assert event["event_type"] == "search_candidates.retrieved"
+    assert event["rerank"] is False
+    assert event["k"] == job["k"]
+    candidates = event["candidates"]
+    assert len(candidates) == 2
+    assert candidates[0]["chunk_id"] == "c1"
+    assert candidates[0]["score"] == 0.9
+    assert candidates[1]["chunk_id"] == "c2"
+
+
+@pytest.mark.asyncio
+async def test_handle_rerank_true_overfetches_candidate_pool():
+    """When the job asked for rerank, SearchHandler should overfetch k*3
+    candidates (no floor/ceiling) instead of exactly k, and carry rerank=True
+    through the emitted event."""
+    job = _make_job(k=5)
+    job["rerank"] = True
+    job["rerank_profile"] = "qwen3-reranker-0.6b"
+
+    job_store = FakeSearchJobStore(job=job)
+    searcher = FakeChunkSearcher(results=[_make_search_result("c1", 0.9)])
+    bus = FakeEventBus()
+
+    handler = SearchHandler(job_store=job_store, chunk_searcher=searcher, event_log=bus)
+    await handler.handle(_make_task("job-1"))
+
+    assert len(searcher.calls) == 1
+    _, _, result_k = searcher.calls[0]
+    assert result_k == 15  # k * 3, no floor/ceiling
+
+    events = bus.drain_topic("search_candidates.retrieved")
+    assert events[0]["rerank"] is True
+    assert events[0]["rerank_profile"] == "qwen3-reranker-0.6b"
+    assert events[0]["k"] == 5
 
 
 @pytest.mark.asyncio
@@ -196,12 +225,13 @@ async def test_handle_search_error_marks_job_failed_and_reraises():
     assert len(job_store.failed) == 1
     assert "pgvector is down" in job_store.failed[0][1]
     assert job_store.completed == []
-    assert bus.drain_topic("search_job.completed") == []
+    assert bus.drain_topic("search_candidates.retrieved") == []
 
 
 @pytest.mark.asyncio
-async def test_handle_empty_results_stored_as_empty_list():
-    """SearchHandler should complete job even when no chunks match."""
+async def test_handle_empty_results_still_emits_candidates_event():
+    """SearchHandler should still announce candidates (empty list) when no chunks match —
+    downstream (SearchFinalizeHandler) is responsible for completing the job as empty."""
     job = _make_job()
     job_store = FakeSearchJobStore(job=job)
     searcher = FakeChunkSearcher(results=[])
@@ -210,7 +240,7 @@ async def test_handle_empty_results_stored_as_empty_list():
     handler = SearchHandler(job_store=job_store, chunk_searcher=searcher, event_log=bus)
     await handler.handle(_make_task("job-1"))
 
-    assert len(job_store.completed) == 1
-    _, results = job_store.completed[0]
-    assert results == []
-    assert len(bus.drain_topic("search_job.completed")) == 1
+    assert job_store.completed == []
+    events = bus.drain_topic("search_candidates.retrieved")
+    assert len(events) == 1
+    assert events[0]["candidates"] == []

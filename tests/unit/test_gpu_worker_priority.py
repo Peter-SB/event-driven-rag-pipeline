@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 
 from event_driven_rag_service.tasks.embed_task import EmbedTask
+from event_driven_rag_service.tasks.search_tasks import CandidateChunkRef, SearchRankTask
 from event_driven_rag_service.worker.gpu_worker import GpuEmbedWorker, WorkerMessage
 
 
@@ -174,3 +175,75 @@ def test_failed_query_ends_up_in_failed_list():
     assert failed[0].delivery_tag == 1
     assert len(ok) == 1
     assert ok[0].delivery_tag == 2
+
+
+# ---------------------------------------------------------------------------
+# Rerank routing — a SearchRankTask batch must go through rerank_handler,
+# never through the embed handler.
+# ---------------------------------------------------------------------------
+
+class _RerankRecorder:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    async def handle(self, task: SearchRankTask, model_name: str, reranker: Any) -> bool:
+        self.calls.append((task.job_id, model_name))
+        return True
+
+
+def test_rerank_batch_routes_to_rerank_handler_not_embed_handler():
+    """A batch pulled from a rerank queue (SearchRankTask messages) must be
+    dispatched through rerank_handler, and must never touch the embed
+    handler's embed_query/embed_chunks."""
+    embed_recorder = _CallRecorder()
+    rerank_recorder = _RerankRecorder()
+
+    loop = asyncio.new_event_loop()
+    worker = GpuEmbedWorker(
+        rabbitmq_url="amqp://localhost",
+        model_queues=[("Qwen/Qwen3-Reranker-0.6B", "gpu.rerank.qwen3-reranker-0.6b")],
+        model_loader=lambda name: _MockModel(),
+        handler=embed_recorder,  # type: ignore[arg-type]
+        rerank_handler=rerank_recorder,  # type: ignore[arg-type]
+        loop=loop,
+        max_batch=32,
+    )
+    worker._model = _MockModel()
+    worker._current_model_name = "Qwen/Qwen3-Reranker-0.6B"
+
+    task = SearchRankTask(
+        job_id="job-1",
+        candidates=[CandidateChunkRef(chunk_id="c1", score=0.5)],
+        rerank_profile="qwen3-reranker-0.6b",
+    )
+    batch = [_make_msg(task, delivery_tag=1)]
+
+    ok, failed = worker._process_batch(batch, "Qwen/Qwen3-Reranker-0.6B")
+
+    assert len(ok) == 1
+    assert len(failed) == 0
+    assert rerank_recorder.calls == [("job-1", "Qwen/Qwen3-Reranker-0.6B")]
+    assert embed_recorder.calls == []
+
+
+def test_rerank_batch_without_rerank_handler_raises():
+    """Constructing without rerank_handler but receiving a rerank batch should
+    fail loudly (assertion), not silently misroute to the embed handler."""
+    embed_recorder = _CallRecorder()
+    loop = asyncio.new_event_loop()
+    worker = GpuEmbedWorker(
+        rabbitmq_url="amqp://localhost",
+        model_queues=[("Qwen/Qwen3-Reranker-0.6B", "gpu.rerank.qwen3-reranker-0.6b")],
+        model_loader=lambda name: _MockModel(),
+        handler=embed_recorder,  # type: ignore[arg-type]
+        loop=loop,
+        max_batch=32,
+    )
+    worker._model = _MockModel()
+    worker._current_model_name = "Qwen/Qwen3-Reranker-0.6B"
+
+    task = SearchRankTask(job_id="job-1", candidates=[])
+    batch = [_make_msg(task, delivery_tag=1)]
+
+    with pytest.raises(AssertionError):
+        worker._process_batch(batch, "Qwen/Qwen3-Reranker-0.6B")

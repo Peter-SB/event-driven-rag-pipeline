@@ -28,6 +28,7 @@ from remote_embedder.registry import MODEL_REGISTRY
 
 BGE_BASE = "text-embedding-bge-base-en-v1.5"
 QWEN = "text-embedding-qwen3-embedding-0.6b"
+RERANK_0_6B = "text-rerank-qwen3-reranker-0.6b"
 
 
 def _state_of(client, model_id: str) -> str | None:
@@ -305,6 +306,68 @@ def test_unrecognised_quantization_still_loads(client):
 
     assert resp.status_code == 200
     assert resp.json()["quantization"] == "int8"
+
+
+# --- POST /v1/rerank --------------------------------------------------------
+
+
+def test_rerank_loads_on_demand_and_returns_one_score_per_document(client):
+    resp = client.post(
+        "/v1/rerank",
+        json={"model": RERANK_0_6B, "query": "hello world", "documents": ["hello there", "unrelated text"]},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["model"] == RERANK_0_6B
+    assert len(body["results"]) == 2
+    assert {r["index"] for r in body["results"]} == {0, 1}
+    assert _state_of(client, RERANK_0_6B) == "loaded"
+
+
+def test_rerank_shares_origin_and_load_state_with_embeddings(client):
+    """/v1/rerank and /v1/embeddings load through the same ModelManager (one
+    model resident at a time) — loading the reranker must evict a
+    previously-loaded embedder, same as loading a second embedder would."""
+    client.post("/v1/embeddings", json={"model": BGE_BASE, "input": ["x"]})
+    assert _state_of(client, BGE_BASE) == "loaded"
+
+    client.post("/v1/rerank", json={"model": RERANK_0_6B, "query": "q", "documents": ["d"]})
+
+    assert _state_of(client, RERANK_0_6B) == "loaded"
+    assert _state_of(client, BGE_BASE) == "not-loaded"
+
+
+def test_rerank_unknown_model_is_400_not_500(client):
+    resp = client.post("/v1/rerank", json={"model": "no-such-model", "query": "q", "documents": ["d"]})
+    assert resp.status_code == 400
+
+
+def test_rerank_wrong_kind_model_is_rejected(client):
+    """An embedder id sent to /v1/rerank must not silently score with it —
+    the kind mismatch has to surface as a client error."""
+    resp = client.post("/v1/rerank", json={"model": BGE_BASE, "query": "q", "documents": ["d"]})
+    assert resp.status_code == 400
+
+
+def test_rerank_empty_documents_is_400(client):
+    resp = client.post("/v1/rerank", json={"model": RERANK_0_6B, "query": "q", "documents": []})
+    assert resp.status_code == 400
+
+
+def test_rerank_protected_by_api_key(settings, manager):
+    settings.api_key = "s3cret"
+    app = create_app(settings=settings, manager=manager)
+    with TestClient(app) as c:
+        resp = c.post("/v1/rerank", json={"model": RERANK_0_6B, "query": "q", "documents": ["d"]})
+        assert resp.status_code == 401
+
+
+def test_rerank_appears_in_native_model_listing(client):
+    """/api/v0/models is the single load-state source both embed and rerank
+    clients read — a reranker must be listed there too, not just /v1/models."""
+    body = client.get("/api/v0/models").json()
+    ids = {m["id"] for m in body["data"]}
+    assert RERANK_0_6B in ids
 
 
 def test_unloaded_models_report_their_registry_quantization(client):

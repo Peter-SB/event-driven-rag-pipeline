@@ -395,3 +395,70 @@ def test_unload_clears_the_applied_precision(settings, loader):
     mgr.load(BGE_BASE, "int8")
     mgr.unload(BGE_BASE)
     assert mgr.applied_quantization is None
+
+
+# --- reranking ---------------------------------------------------------------
+
+RERANK_0_6B = "text-rerank-qwen3-reranker-0.6b"
+RERANK_4B = "text-rerank-qwen3-reranker-4b"
+
+
+def test_rerank_loads_on_demand(settings, loader):
+    mgr = ModelManager(settings, loader=loader)
+    assert mgr.loaded_model_id is None
+
+    mgr.rerank(RERANK_0_6B, "query", ["doc"])
+
+    assert mgr.loaded_model_id == RERANK_0_6B
+
+
+def test_rerank_returns_one_score_per_document_in_order(settings, loader):
+    mgr = ModelManager(settings, loader=loader)
+    scores = mgr.rerank(RERANK_0_6B, "hello world", ["hello there", "world peace", "unrelated"])
+    assert len(scores) == 3
+
+
+def test_rerank_empty_documents_returns_empty_without_loading(settings, loader):
+    mgr = ModelManager(settings, loader=loader)
+    assert mgr.rerank(RERANK_0_6B, "query", []) == []
+    assert loader.loaded == []
+
+
+def test_rerank_evicts_a_resident_embedder_and_vice_versa(settings, loader):
+    """Only one model is resident regardless of kind — an embedder and a
+    reranker share the same VRAM budget on a homelab box."""
+    mgr = ModelManager(settings, loader=loader)
+    mgr.encode(BGE_BASE, ["x"])
+    mgr.rerank(RERANK_0_6B, "q", ["d"])
+
+    assert mgr.loaded_model_id == RERANK_0_6B
+    assert loader.loaded == [BGE_BASE, RERANK_0_6B]
+
+
+def test_encode_refuses_a_rerank_model_id(settings, loader):
+    """POST /v1/embeddings must not silently score with a reranker — the
+    kind mismatch has to surface as an error, not a shape-mangled response."""
+    mgr = ModelManager(settings, loader=loader)
+    with pytest.raises(UnknownModelError):
+        mgr.encode(RERANK_0_6B, ["x"])
+
+
+def test_rerank_refuses_an_embed_model_id(settings, loader):
+    mgr = ModelManager(settings, loader=loader)
+    with pytest.raises(UnknownModelError):
+        mgr.rerank(BGE_BASE, "q", ["d"])
+
+
+def test_reranker_quantization_is_labelled_int4_not_int8(settings, loader):
+    mgr = ModelManager(settings, loader=loader)
+    mgr.load(RERANK_0_6B, "int4")
+    assert mgr.applied_quantization == "int4"
+    assert {s["id"]: s["quantization"] for s in mgr.states()}[RERANK_0_6B] == "int4"
+
+
+def test_reranker_dim_verification_is_skipped(settings, loader):
+    """A reranker's scalar score has no width to verify — load() must not
+    call _verify_dim (which would call .encode(), a method rerankers don't have)."""
+    mgr = ModelManager(settings, loader=loader)
+    mgr.load(RERANK_0_6B)  # must not raise AttributeError from a missing .encode()
+    assert mgr.loaded_model_id == RERANK_0_6B

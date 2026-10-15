@@ -15,20 +15,31 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class ModelSpec:
-    """One servable model."""
+    """One servable model — either an embedder (kind="embed") or a reranker
+    (kind="rerank"). The two kinds load through different transformers
+    entrypoints (SentenceTransformer vs AutoModelForCausalLM) and expose
+    different work methods (encode() vs score()) — see manager.py."""
 
-    # The id clients send. Matches EMBED_CONFIGS[...].remote_model in the pipeline.
+    # The id clients send. Matches EMBED_CONFIGS[...].remote_model /
+    # RERANK_CONFIGS[...].remote_model in the pipeline.
     id: str
     # HuggingFace repo to load from (safetensors).
     repo_id: str
+    # "embed" or "rerank" — selects the loader and the served method.
+    kind: str = "embed"
     # Expected embedding dimension. Verified against the first vector a freshly
     # loaded model produces: downstream this lands in a fixed-width pgvector
     # column, so a repo revision silently changing shape must fail loudly here
-    # rather than corrupt the table.
-    dim: int
-    # Load in 8-bit via bitsandbytes. Worth it for the 0.6B model; for the small
-    # BGE encoders LLM.int8's per-layer outlier handling costs more time than the
-    # saved VRAM is worth, so they stay fp16/fp32.
+    # rather than corrupt the table. Unused (0) for kind="rerank" — a scalar
+    # relevance score has no "width" to verify.
+    dim: int = 0
+    # Load quantised. For kind="embed" this means int8 via bitsandbytes
+    # (LLM.int8 — worth it for the 0.6B/4B Qwen3 models; the small BGE
+    # encoders' per-layer outlier handling costs more time than the saved
+    # VRAM is worth, so they stay fp16/fp32). For kind="rerank" this means
+    # int4 (nf4) — a reranker only has to preserve relative ordering within
+    # one candidate pool, so it tolerates lower precision than an embedding
+    # space compared across pool boundaries via ANN.
     quantize: bool = False
     # Override the model's own max_seq_length. None keeps the checkpoint default.
     max_seq_length: int | None = None
@@ -62,7 +73,27 @@ MODEL_REGISTRY: dict[str, ModelSpec] = {
         # alongside any activations at all.
         quantize=True,
     ),
+    "text-rerank-qwen3-reranker-0.6b": ModelSpec(
+        id="text-rerank-qwen3-reranker-0.6b",
+        repo_id="Qwen/Qwen3-Reranker-0.6B",
+        kind="rerank",
+        quantize=True,
+    ),
+    "text-rerank-qwen3-reranker-4b": ModelSpec(
+        id="text-rerank-qwen3-reranker-4b",
+        repo_id="Qwen/Qwen3-Reranker-4B",
+        kind="rerank",
+        quantize=True,
+    ),
 }
+
+
+def embed_specs() -> list[ModelSpec]:
+    return [s for s in MODEL_REGISTRY.values() if s.kind == "embed"]
+
+
+def rerank_specs() -> list[ModelSpec]:
+    return [s for s in MODEL_REGISTRY.values() if s.kind == "rerank"]
 
 
 def get_spec(model_id: str) -> ModelSpec | None:

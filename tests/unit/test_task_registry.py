@@ -23,6 +23,11 @@ from pydantic import ValidationError
 from event_driven_rag_service.tasks.chunk_task import ChunkTask
 from event_driven_rag_service.tasks.embed_task import EmbedTask
 from event_driven_rag_service.tasks.registry import TASK_ROUTES, parse_task
+from event_driven_rag_service.tasks.search_tasks import (
+    CandidateChunkRef,
+    SearchFinalizeTask,
+    SearchRankTask,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -126,6 +131,57 @@ def test_parse_task_raises_on_unknown_kind():
 def test_parse_task_raises_on_missing_kind():
     with pytest.raises(ValidationError):
         parse_task({"task_type": "body", "post_id": 1})
+
+
+def test_parse_task_returns_search_rank_task_for_kind_search_rank():
+    payload = {
+        "kind": "search_rank",
+        "job_id": "job-1",
+        "candidates": [{"chunk_id": "c1", "score": 0.5}],
+        "rerank_profile": "qwen3-reranker-0.6b",
+    }
+    task = parse_task(payload)
+    assert isinstance(task, SearchRankTask)
+    assert task.job_id == "job-1"
+    assert task.candidates[0].chunk_id == "c1"
+
+
+def test_parse_task_returns_search_finalize_task_for_kind_search_finalize():
+    payload = {
+        "kind": "search_finalize",
+        "job_id": "job-1",
+        "candidates": [{"chunk_id": "c1", "score": 0.5}],
+    }
+    task = parse_task(payload)
+    assert isinstance(task, SearchFinalizeTask)
+    assert task.job_id == "job-1"
+
+
+def test_search_rank_route_has_no_static_routing_key():
+    """Rerank's queue depends on RERANK_CONFIGS[profile].queue (GPU-bound —
+    lives on the embedding exchange), not a static key — see SearchDispatcher."""
+    assert TASK_ROUTES["search_rank"].exchange == "embedding"
+    assert TASK_ROUTES["search_rank"].routing_key is None
+
+
+def test_search_finalize_route_points_to_search_exchange():
+    assert TASK_ROUTES["search_finalize"].exchange == "search"
+    assert TASK_ROUTES["search_finalize"].routing_key == "cpu.search.finalize"
+
+
+def test_search_rank_task_round_trips_through_json():
+    original = SearchRankTask(
+        job_id="job-1",
+        candidates=[CandidateChunkRef(chunk_id="c1", score=0.42)],
+        rerank_profile="default",
+        trace_id="trace-abc",
+    )
+    restored = parse_task(json.loads(original.model_dump_json()))
+    assert isinstance(restored, SearchRankTask)
+    assert restored.job_id == original.job_id
+    assert restored.candidates[0].chunk_id == "c1"
+    assert restored.candidates[0].score == 0.42
+    assert restored.rerank_profile == "default"
 
 
 def test_chunk_task_round_trips_through_json():

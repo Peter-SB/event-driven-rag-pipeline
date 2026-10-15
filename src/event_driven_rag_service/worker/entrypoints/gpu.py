@@ -23,6 +23,7 @@ import asyncpg
 from event_driven_rag_service.config.settings import settings
 from event_driven_rag_service.infrastructure.observability import setup_observability
 from event_driven_rag_service.config.embedding_config import EMBED_CONFIGS
+from event_driven_rag_service.config.reranking_config import RERANK_CONFIGS, RerankConfig
 from event_driven_rag_service.exceptions import EmbeddingUnavailableError
 from event_driven_rag_service.infrastructure.event_bus import create_event_bus, PostgresEventBus
 from event_driven_rag_service.infrastructure.metrics import record_model_load_time
@@ -31,7 +32,9 @@ from event_driven_rag_service.repository.chunk_repository import ChunkRepository
 from event_driven_rag_service.repository.search_job_repository import SearchJobRepository
 from event_driven_rag_service.worker.gpu_worker import GpuEmbedWorker
 from event_driven_rag_service.worker.remote_embedding import build_fallback_model
+from event_driven_rag_service.worker.reranking import build_fallback_reranker
 from event_driven_rag_service.handlers.embed_handler import EmbedHandler
+from event_driven_rag_service.handlers.rerank_handler import RerankHandler
 
 # Replace logging.basicConfig() — routes all stdlib logging.getLogger() calls through structlog.
 setup_observability("rag-gpu-worker")
@@ -50,6 +53,26 @@ def _config_for(model_name: str) -> Any:
     the name it consumes back to the config that describes it.
     """
     return next((c for c in EMBED_CONFIGS.values() if c.primary == model_name), None)
+
+
+def _rerank_config_for(model_name: str) -> RerankConfig | None:
+    """The RerankConfig whose `primary` is *model_name*, or None.
+
+    RERANK_CONFIGS is keyed by profile (possibly several profiles pointing at
+    the same model), so — unlike EMBED_CONFIGS, whose chunk-type keys are 1:1
+    with models — this dedupes by `primary` rather than assuming key==model.
+    """
+    return next((c for c in RERANK_CONFIGS.values() if c.primary == model_name), None)
+
+
+def _load_model_or_reranker(model_name: str) -> Any:
+    """Dispatch to the embedding or reranking loader, whichever config claims
+    *model_name*. GpuEmbedWorker's `model_loader` callback doesn't know or
+    care which — it just calls this with whatever queue's model_name produced
+    a batch."""
+    if _rerank_config_for(model_name) is not None:
+        return _load_reranker(model_name)
+    return _load_model(model_name)
 
 
 def _load_model(model_name: str) -> Any:
@@ -113,6 +136,298 @@ def _load_model(model_name: str) -> Any:
         load_timeout_s=settings.embed_remote_load_timeout_s,
         quantization=cfg.quantization,
     )
+
+
+# ---------------------------------------------------------------------------
+# Reranker loader — same allow_local/allow_remote fallback ladder as
+# embedding, but for a scoring model rather than an encoder. See
+# handlers/rerank_handler.py's RerankerModel protocol (.score(), not .encode()).
+# ---------------------------------------------------------------------------
+
+def _load_reranker(model_name: str) -> Any:
+    """Load a reranker model by name. Mirrors `_load_model`'s remote/local
+    fallback ladder exactly — see its docstring for the four allow_local/
+    allow_remote cases, which apply identically here."""
+    cfg = _rerank_config_for(model_name)
+    if cfg is None:
+        logger.warning(
+            "No RERANK_CONFIGS entry for %r — loading locally with defaults", model_name
+        )
+        return _load_local_reranker(model_name)
+
+    use_remote = bool(settings.embed_remote_url) and cfg.allow_remote
+
+    if not use_remote and not cfg.allow_local:
+        raise RuntimeError(
+            f"{model_name!r} has allow_local=False and no usable remote leg "
+            f"(allow_remote={cfg.allow_remote}, EMBED_REMOTE_URL="
+            f"{settings.embed_remote_url or '<unset>'!r})."
+        )
+
+    if not use_remote:
+        return _load_local_reranker(model_name)
+
+    logger.info(
+        "Routing reranker %r to remote embedder (remote_id=%s quantization=%s local_fallback=%s)",
+        model_name,
+        cfg.remote_id,
+        cfg.quantization or "none",
+        "enabled" if cfg.allow_local else "disabled",
+    )
+    local: Any = (
+        _LazyLocalReranker(cfg)
+        if cfg.allow_local
+        else _NoLocalRerankFallback(cfg.primary)
+    )
+    # Reuses the same remote endpoint (remote_embedder_service now serves both
+    # embedding and reranking) and the same timeout/health settings — the
+    # pipeline talks to one homelab GPU box, not two.
+    return build_fallback_reranker(
+        local=local,
+        remote_model_name=cfg.remote_id,
+        base_url=settings.embed_remote_url,
+        api_key=settings.embed_remote_api_key,
+        timeout_s=settings.embed_remote_timeout_s,
+        health_path=settings.embed_remote_health_path,
+        load_timeout_s=settings.embed_remote_load_timeout_s,
+        quantization=cfg.quantization,
+    )
+
+
+def _load_local_reranker(model_name: str) -> Any:
+    """Load a local reranker by name. Set MOCK_EMBEDDINGS=1 to use a
+    deterministic mock instead — same env var the embedding side reads, since
+    dev/CI without a GPU wants both mocked together."""
+    if os.getenv("MOCK_EMBEDDINGS", "").strip() not in ("", "0", "false", "False"):
+        logger.info("Using mock reranker for %s", model_name)
+        return _MockRerankerModel(model_name)
+
+    cfg = _rerank_config_for(model_name)
+    quantization = cfg.quantization if cfg is not None else None
+    return _load_qwen3_reranker(model_name, quantization)
+
+
+# Qwen3-Reranker's own prompt template (from its model card): the model is a
+# causal LM fine-tuned to answer "yes"/"no" to a formatted judgement prompt.
+# Relevance is read off as P(yes) via a softmax over just the "yes"/"no"
+# logits at the final position — never a raw generation.
+_QWEN3_RERANK_SYSTEM_PREFIX = (
+    "<|im_start|>system\n"
+    "Judge whether the Document meets the requirements based on the Query "
+    "and the Instruct provided. Note that the answer can only be \"yes\" or \"no\".<|im_end|>\n"
+    "<|im_start|>user\n"
+)
+_QWEN3_RERANK_SUFFIX = "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+_QWEN3_RERANK_DEFAULT_INSTRUCTION = (
+    "Given a web search query, retrieve relevant passages that answer the query"
+)
+_QWEN3_RERANK_MAX_LENGTH = 8192
+
+
+def _load_qwen3_reranker(model_name: str, quantization: str | None) -> Any:
+    """Load a Qwen3-Reranker checkpoint via transformers (AutoModelForCausalLM),
+    optionally in int4 (nf4) via bitsandbytes on CUDA.
+
+    Unlike the SentenceTransformer embedding path, there is no CPU quantised
+    fallback here — bitsandbytes 4-bit is CUDA-only, and PyTorch's dynamic
+    quantization (used as the CPU stand-in for int8 embedding) doesn't apply
+    cleanly to a causal LM's generation head. A CPU box loads full precision.
+    """
+    try:
+        import torch
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+    except ImportError as exc:
+        raise RuntimeError(
+            f"transformers/torch not available — cannot load reranker {model_name!r}. "
+            "Install via: pip install transformers torch"
+        ) from exc
+
+    device = _resolve_device()
+    want_int4 = _wants_int4(quantization, model_name)
+
+    def _build(quantised: bool):
+        kwargs: dict[str, Any] = {}
+        if quantised:
+            from transformers import BitsAndBytesConfig
+
+            kwargs["quantization_config"] = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=torch.bfloat16,
+            )
+            kwargs["device_map"] = "auto"
+        else:
+            kwargs["device_map"] = device if device == "cuda" else None
+        model = AutoModelForCausalLM.from_pretrained(model_name, trust_remote_code=True, **kwargs)
+        return model.eval()
+
+    load_start = time.time()
+    precision = "full precision"
+    model = None
+    if want_int4 and device == "cuda":
+        try:
+            logger.info("Loading reranker %s in int4 (nf4/bitsandbytes) on %s", model_name, device)
+            model = _build(quantised=True)
+            precision = "int4 (nf4/bitsandbytes)"
+        except Exception:
+            logger.warning(
+                "int4 load failed for %r — retrying at full precision", model_name, exc_info=True,
+            )
+    elif want_int4:
+        logger.warning(
+            "%r requested int4 quantisation but device=%r — bitsandbytes 4-bit is "
+            "CUDA-only; loading at full precision instead", model_name, device,
+        )
+
+    if model is None:
+        logger.info("Loading reranker %s on %s", model_name, device)
+        model = _build(quantised=False)
+        if device != "cuda":
+            model = model.to(device)
+
+    tokenizer = AutoTokenizer.from_pretrained(model_name, padding_side="left", trust_remote_code=True)
+    load_time = time.time() - load_start
+    record_model_load_time(load_time, model_name)
+    logger.info(
+        "Reranker loaded: %s (quantization=%s device=%s load_time=%.2fs)",
+        model_name, precision, device, load_time,
+    )
+    return _Qwen3RerankerModel(model, tokenizer, model_name)
+
+
+class _Qwen3RerankerModel:
+    """Wraps a Qwen3-Reranker causal LM to match the RerankerModel protocol.
+
+    `score()` builds the model's documented judgement prompt per (query,
+    document) pair, runs one forward pass per batch, and reads relevance off
+    as P(yes) via a two-way softmax over the "yes"/"no" logits at the final
+    token position — the model's own recommended scoring method, not a raw
+    generation.
+    """
+
+    def __init__(self, model: Any, tokenizer: Any, name: str) -> None:
+        self._model = model
+        self._tokenizer = tokenizer
+        self._name = name
+        self._token_false_id = tokenizer.convert_tokens_to_ids("no")
+        self._token_true_id = tokenizer.convert_tokens_to_ids("yes")
+        self._prefix_tokens = tokenizer.encode(_QWEN3_RERANK_SYSTEM_PREFIX, add_special_tokens=False)
+        self._suffix_tokens = tokenizer.encode(_QWEN3_RERANK_SUFFIX, add_special_tokens=False)
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def score(self, query: str, documents: list[str]) -> list[float]:
+        import torch
+
+        pairs = [
+            f"<Instruct>: {_QWEN3_RERANK_DEFAULT_INSTRUCTION}\n<Query>: {query}\n<Document>: {doc}"
+            for doc in documents
+        ]
+        budget = _QWEN3_RERANK_MAX_LENGTH - len(self._prefix_tokens) - len(self._suffix_tokens)
+        inputs = self._tokenizer(
+            pairs, padding=False, truncation="longest_first",
+            return_attention_mask=False, max_length=budget,
+        )
+        for i, ids in enumerate(inputs["input_ids"]):
+            inputs["input_ids"][i] = self._prefix_tokens + ids + self._suffix_tokens
+        # max_length already applied above (at encode time, before the prefix/
+        # suffix were spliced in) — here padding=True just pads to the batch's
+        # own longest sequence, so passing max_length again is a no-op transformers warns about.
+        inputs = self._tokenizer.pad(inputs, padding=True, return_tensors="pt")
+        inputs = {k: v.to(self._model.device) for k, v in inputs.items()}
+
+        with torch.no_grad():
+            logits = self._model(**inputs).logits[:, -1, :]
+            true_vec = logits[:, self._token_true_id]
+            false_vec = logits[:, self._token_false_id]
+            stacked = torch.stack([false_vec, true_vec], dim=1)
+            log_probs = torch.nn.functional.log_softmax(stacked, dim=1)
+            scores = log_probs[:, 1].exp().tolist()
+        return scores
+
+
+class _LazyLocalReranker:
+    """Defers loading the local reranker until the first ``score()`` call.
+    Rerank analogue of `_LazyLocalModel` — see its docstring."""
+
+    def __init__(self, cfg: RerankConfig) -> None:
+        self._cfg = cfg
+        self._model: Any | None = None
+        self._lock = threading.Lock()
+
+    @property
+    def name(self) -> str:
+        return self._cfg.primary
+
+    def score(self, query: str, documents: list[str]) -> list[float]:
+        with self._lock:
+            if self._model is None:
+                self._model = _load_local_reranker(self._cfg.primary)
+        return self._model.score(query, documents)
+
+
+class _NoLocalRerankFallback:
+    """Rerank analogue of `_NoLocalFallback` — see its docstring."""
+
+    def __init__(self, name: str) -> None:
+        self._name = name
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def score(self, query: str, documents: list[str]) -> list[float]:
+        raise EmbeddingUnavailableError(
+            f"Remote reranking unavailable for {self._name!r} and local reranking is "
+            f"disabled for it (allow_local=False in RERANK_CONFIGS). Bring the remote "
+            f"reranker back up, or allow local reranking for this model."
+        )
+
+
+class _MockRerankerModel:
+    """Deterministic mock reranker for development / testing without a GPU.
+
+    Scores documents by (bounded) lexical overlap with the query — enough to
+    exercise sort order in tests without loading a real model."""
+
+    def __init__(self, name: str) -> None:
+        self._name = name
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def score(self, query: str, documents: list[str]) -> list[float]:
+        query_terms = set(query.lower().split())
+        scores = []
+        for doc in documents:
+            doc_terms = set(doc.lower().split())
+            overlap = len(query_terms & doc_terms)
+            scores.append(overlap / max(len(query_terms), 1))
+        return scores
+
+
+# Accepted spellings for RerankConfig.quantization. int4 is the reranker
+# default (see config/reranking_config.py); int8 is accepted too since a
+# rerank profile could reasonably ask for it.
+_QUANT_INT4 = {"int4", "4bit", "4-bit", "q4", "nf4"}
+
+
+def _wants_int4(quantization: str | None, model_name: str) -> bool:
+    if quantization is None:
+        return False
+    value = quantization.strip().lower()
+    if value in _QUANT_INT4:
+        return True
+    if value in _QUANT_OFF:
+        return False
+    logger.warning(
+        "Unrecognised reranker quantization %r for %r — loading at full precision",
+        quantization, model_name,
+    )
+    return False
 
 
 # Accepted spellings for EmbedConfig.quantization. Kept in step with
@@ -427,7 +742,7 @@ async def _setup():
     logger.info("Repositories ready (lazy chunk table creation)")
 
     embedding_store = _CompositeEmbeddingStore(chunk_repo, job_repo)
-    return pool, event_bus, embedding_store
+    return pool, event_bus, embedding_store, job_repo
 
 
 def main() -> None:
@@ -440,15 +755,19 @@ def main() -> None:
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
-    pool, event_bus, embedding_store = loop.run_until_complete(_setup())
+    pool, event_bus, embedding_store, job_repo = loop.run_until_complete(_setup())
 
     # Priority-ordered model queues: index 0 = highest priority.
-    # Query embeddings (search latency-sensitive) before bulk chunk embeddings.
+    # Query embeddings (search latency-sensitive) before bulk chunk embeddings,
+    # rerank queues last — a rerank only runs after a search's ANN step has
+    # already completed, so it is never the most time-critical thing pending.
     model_queues = [
-        (cfg.primary, cfg.queue)
-        for cfg in EMBED_CONFIGS.values()
+        (cfg.primary, cfg.queue) for cfg in EMBED_CONFIGS.values()
+    ] + [
+        (cfg.primary, cfg.queue) for cfg in RERANK_CONFIGS.values()
     ]
-    # Deduplicate while preserving order (query first if present).
+    # Deduplicate while preserving order (multiple RERANK_CONFIGS profiles can
+    # point at the same model/queue — e.g. "default" and "qwen3-reranker-4b").
     seen: set[str] = set()
     unique_queues: list[tuple[str, str]] = []
     for pair in model_queues:
@@ -458,7 +777,7 @@ def main() -> None:
 
     model_max_batch = {
         cfg.primary: cfg.max_batch
-        for cfg in EMBED_CONFIGS.values()
+        for cfg in list(EMBED_CONFIGS.values()) + list(RERANK_CONFIGS.values())
         if cfg.max_batch is not None
     }
 
@@ -471,12 +790,18 @@ def main() -> None:
         embedding_store=embedding_store,
         event_log=event_bus,
     )
+    rerank_handler = RerankHandler(
+        job_store=job_repo,
+        chunks=chunk_repo_for_fetch,
+        event_log=event_bus,
+    )
 
     worker = GpuEmbedWorker(
         rabbitmq_url=settings.rabbitmq_url,
         model_queues=unique_queues,
-        model_loader=_load_model,
+        model_loader=_load_model_or_reranker,
         handler=embed_handler,
+        rerank_handler=rerank_handler,
         loop=loop,
         model_max_batch=model_max_batch,
     )

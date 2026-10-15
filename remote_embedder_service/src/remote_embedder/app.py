@@ -37,6 +37,9 @@ from remote_embedder.schemas import (
     NativeModelList,
     OpenAIModel,
     OpenAIModelList,
+    RerankRequest,
+    RerankResponse,
+    RerankResultItem,
     UnloadRequest,
     Usage,
 )
@@ -174,6 +177,44 @@ def _register_routes(app: FastAPI) -> None:
                 EmbeddingItem(index=i, embedding=vec) for i, vec in enumerate(vectors)
             ],
             usage=_estimate_usage(texts),
+        )
+
+    @app.post("/v1/rerank", response_model=RerankResponse)
+    async def rerank(
+        body: RerankRequest,
+        cfg: Settings = Depends(get_settings),
+        mgr: ModelManager = Depends(get_manager),
+        authorization: str | None = Header(default=None),
+    ) -> RerankResponse:
+        """Score `documents` against `query`. Not OpenAI-compatible (there's
+        no standard rerank shape to match) — lives under /v1/ alongside
+        /v1/embeddings purely so it sits on the same base_url the pipeline's
+        httpx.Client is already configured with (EMBED_REMOTE_URL, which
+        includes the /v1 path segment) rather than needing a second client.
+
+        Follows the same auth and load-on-demand conventions as /v1/embeddings.
+
+        Results are not guaranteed to be returned in input order — see
+        RerankResultItem.index, which the client re-aligns against."""
+        _check_auth(cfg, authorization)
+
+        if not body.documents:
+            raise HTTPException(status_code=400, detail="documents must not be empty")
+        if get_spec(body.model) is None:
+            raise HTTPException(status_code=400, detail=f"unknown model: {body.model}")
+
+        try:
+            scores = await run_in_threadpool(mgr.rerank, body.model, body.query, body.documents)
+        except UnknownModelError as exc:
+            raise HTTPException(status_code=400, detail=str(exc) or f"unknown model: {body.model}")
+        except ModelLoadError as exc:
+            raise HTTPException(status_code=503, detail=str(exc))
+
+        return RerankResponse(
+            model=body.model,
+            results=[
+                RerankResultItem(index=i, score=score) for i, score in enumerate(scores)
+            ],
         )
 
     # --- native (LM Studio-shaped) surface --------------------------------

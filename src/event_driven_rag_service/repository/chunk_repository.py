@@ -179,6 +179,40 @@ class ChunkRepository:
             )
         return {str(row["id"]): row["post_updated_at"] for row in rows}
 
+    async def get_chunks_by_ids(
+        self, chunk_ids: list[str], table_name: str
+    ) -> list[dict[str, Any]]:
+        """Return full rows (id, post_id, text, metadata) for the given IDs, any order.
+
+        Used by RerankHandler and SearchFinalizeHandler to hydrate a candidate
+        pool (chunk_id + ANN score) back into result rows shaped like
+        ``search_nearest``'s output, without re-running the ANN query.
+
+        Args:
+            chunk_ids: List of chunk IDs to fetch.
+            table_name: The target table.
+        """
+        if not chunk_ids:
+            return []
+        table_name = table_name.lower()
+        try:
+            async with self._pool.acquire() as conn:
+                rows = await conn.fetch(
+                    f"SELECT id, post_id, text, metadata FROM {table_name} WHERE id = ANY($1::uuid[])",
+                    chunk_ids,
+                )
+        except asyncpg.exceptions.UndefinedTableError:
+            raise ChunkTableNotFoundError(table_name)
+        return [
+            {
+                "id": str(row["id"]),
+                "post_id": row["post_id"],
+                "text": row["text"],
+                "metadata": json.loads(row["metadata"]) if isinstance(row["metadata"], str) else row["metadata"],
+            }
+            for row in rows
+        ]
+
     async def fetch_texts(
         self, chunk_ids: list[str], table_name: Optional[str] = None
     ) -> list[tuple[str, str]]:

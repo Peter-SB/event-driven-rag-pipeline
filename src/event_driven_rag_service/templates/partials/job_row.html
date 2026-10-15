@@ -15,7 +15,7 @@
 >
   <td class="query-cell">{{ query }}</td>
   <td>{{ library_id }}</td>
-  <td>{{ chunk_type }}</td>
+  <td>{{ chunk_type }}{% if rerank %}<span class="rerank-tag">rerank</span>{% endif %}</td>
   <td>{{ k }}</td>
   <td><span class="badge badge-{{ status }}">{{ status }}</span></td>
   <td>{{ created_at }}</td>

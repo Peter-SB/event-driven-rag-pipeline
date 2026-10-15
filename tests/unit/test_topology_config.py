@@ -1,14 +1,22 @@
-"""Sanity checks that every embedding queue in EMBED_CONFIGS is declared in BINDINGS."""
+"""Sanity checks that every embedding/rerank queue in EMBED_CONFIGS/RERANK_CONFIGS
+is declared in BINDINGS."""
 from unittest.mock import patch
 
 import pytest
 
 from event_driven_rag_service.config.embedding_config import EMBED_CONFIGS, EmbedConfig
+from event_driven_rag_service.config.reranking_config import RERANK_CONFIGS
 from event_driven_rag_service.infrastructure.task_queue import BINDINGS, verify_embedding_topology
 
 
 def _embedding_queues() -> set[str]:
     return {queue for _, queue in BINDINGS["embedding"]}
+
+
+def _configured_queues() -> set[str]:
+    return {cfg.queue for cfg in EMBED_CONFIGS.values()} | {
+        cfg.queue for cfg in RERANK_CONFIGS.values()
+    }
 
 
 def test_every_embed_config_queue_is_declared():
@@ -19,11 +27,20 @@ def test_every_embed_config_queue_is_declared():
         )
 
 
-def test_no_undeclared_queues_in_embed_configs():
-    configured = {cfg.queue for cfg in EMBED_CONFIGS.values()}
+def test_every_rerank_config_queue_is_declared():
     declared = _embedding_queues()
-    orphans = declared - configured
-    assert not orphans, f"Queues declared in BINDINGS but not used by any EMBED_CONFIGS: {orphans}"
+    for profile, cfg in RERANK_CONFIGS.items():
+        assert cfg.queue in declared, (
+            f"RERANK_CONFIGS[{profile!r}].queue={cfg.queue!r} has no matching entry in BINDINGS['embedding']"
+        )
+
+
+def test_no_undeclared_queues_in_embed_configs():
+    declared = _embedding_queues()
+    orphans = declared - _configured_queues()
+    assert not orphans, (
+        f"Queues declared in BINDINGS but not used by any EMBED_CONFIGS/RERANK_CONFIGS entry: {orphans}"
+    )
 
 
 # ---------------------------------------------------------------------------

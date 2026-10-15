@@ -68,6 +68,7 @@
       <div class="state-subtitle">
         {% if status == 'embedding' %}Embedding your query
         {% elif status == 'searching' %}Running vector search
+        {% elif status == 'reranking' %}Reranking candidates
         {% else %}{{ status }}{% endif %}
       </div>
     </div>

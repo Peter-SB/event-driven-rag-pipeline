@@ -12,8 +12,10 @@ import uuid
 import pytest
 
 from event_driven_rag_service.config.embedding_config import EMBED_CONFIGS
+from event_driven_rag_service.config.reranking_config import RERANK_CONFIGS
 from event_driven_rag_service.dispatchers.search_dispatcher import SearchDispatcher
 from event_driven_rag_service.tasks.embed_task import EmbedTask
+from event_driven_rag_service.tasks.search_tasks import SearchFinalizeTask, SearchRankTask
 from event_driven_rag_service.events.search_events import SearchJobCreatedEvent
 
 
@@ -71,8 +73,10 @@ async def test_search_dispatcher_publishes_embed_task_for_query():
     except asyncio.TimeoutError:
         pass  # Expected — run() is an infinite loop
 
-    # Verify exchange was declared
-    mock_channel.declare_exchange.assert_called_once_with(
+    # Verify the embedding exchange was declared (both the job-created loop and
+    # the candidates-retrieved loop declare exchanges on startup — run() now
+    # gathers both subscriptions concurrently).
+    mock_channel.declare_exchange.assert_any_call(
         "embedding", "topic", durable=True
     )
 
@@ -143,8 +147,9 @@ async def test_search_dispatcher_handles_missing_trace_id():
 
 
 @pytest.mark.asyncio
-async def test_search_dispatcher_subscribes_to_correct_topic():
-    """SearchDispatcher should subscribe to 'search_job.created' topic."""
+async def test_search_dispatcher_subscribes_to_both_topics():
+    """SearchDispatcher.run() should gather both subscriptions concurrently:
+    'search_job.created' and 'search_candidates.retrieved'."""
     mock_rmq = AsyncMock()
     mock_channel = AsyncMock()
     mock_rmq.channel.return_value = mock_channel
@@ -159,16 +164,12 @@ async def test_search_dispatcher_subscribes_to_correct_topic():
     except asyncio.TimeoutError:
         pass
 
-    # Verify subscription
-    mock_bus.subscribe.assert_called_once()
-    call_args = mock_bus.subscribe.call_args
+    assert mock_bus.subscribe.call_count == 2
+    topics = {call.args[0] for call in mock_bus.subscribe.call_args_list}
+    assert topics == {"search_job.created", "search_candidates.retrieved"}
 
-    topic = call_args[0][0]
-    assert topic == "search_job.created", f"Expected topic 'search_job.created', got {topic!r}"
-
-    # Check consumer group
-    kwargs = call_args[1]
-    assert "consumer_group" in kwargs, "consumer_group should be specified"
+    for call in mock_bus.subscribe.call_args_list:
+        assert "consumer_group" in call.kwargs, "consumer_group should be specified"
 
 
 async def _run_dispatcher_with_event(event: dict) -> tuple[str, dict]:
@@ -249,3 +250,152 @@ async def test_search_dispatcher_skips_event_with_unknown_profile():
         pass
 
     mock_exchange.publish.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# search_candidates.retrieved → SearchRankTask (rerank) or
+#                                SearchFinalizeTask (no rerank)
+# ---------------------------------------------------------------------------
+
+async def _run_dispatcher_with_candidates_event(event: dict) -> tuple[str, str, dict]:
+    """Helper: run dispatcher with one search_candidates.retrieved event.
+    Returns (exchange_name, routing_key, task_dict) for whichever exchange
+    actually got a publish call."""
+    exchanges: dict[str, AsyncMock] = {}
+
+    def _declare_exchange(name, *_args, **_kwargs):
+        if name not in exchanges:
+            exchanges[name] = AsyncMock()
+        return exchanges[name]
+
+    mock_channel = AsyncMock()
+    mock_channel.declare_exchange.side_effect = _declare_exchange
+    mock_rmq = AsyncMock()
+    mock_rmq.channel.return_value = mock_channel
+
+    def _subscribe(topic, **_kwargs):
+        events = [event] if topic == "search_candidates.retrieved" else []
+        return FakeEventBusSubscription(events)
+
+    mock_bus = MagicMock()
+    mock_bus.subscribe = MagicMock(side_effect=_subscribe)
+
+    dispatcher = SearchDispatcher(mock_rmq, mock_bus)
+    try:
+        await asyncio.wait_for(dispatcher.run(), timeout=1.0)
+    except asyncio.TimeoutError:
+        pass
+
+    for name, exchange in exchanges.items():
+        if exchange.publish.called:
+            call_args = exchange.publish.call_args
+            routing_key = call_args[1]["routing_key"]
+            task_dict = json.loads(call_args[0][0].body.decode())
+            return name, routing_key, task_dict
+
+    raise AssertionError("no exchange received a publish call")
+
+
+@pytest.mark.asyncio
+async def test_search_dispatcher_routes_rerank_true_to_gpu_rerank_queue():
+    """search_candidates.retrieved with rerank=True must publish a
+    SearchRankTask to the profile's RERANK_CONFIGS queue on the embedding
+    exchange — not cpu.search.finalize."""
+    event = {
+        "event_type": "search_candidates.retrieved",
+        "query_job_id": "job-1",
+        "candidates": [{"chunk_id": "c1", "score": 0.9}],
+        "k": 5,
+        "rerank": True,
+        "rerank_profile": "qwen3-reranker-0.6b",
+    }
+    exchange_name, routing_key, task_dict = await _run_dispatcher_with_candidates_event(event)
+
+    expected_cfg = RERANK_CONFIGS["qwen3-reranker-0.6b"]
+    assert exchange_name == "embedding"
+    assert routing_key == expected_cfg.queue
+
+    task = SearchRankTask.model_validate(task_dict)
+    assert task.job_id == "job-1"
+    assert task.rerank_profile == "qwen3-reranker-0.6b"
+    assert len(task.candidates) == 1
+    assert task.candidates[0].chunk_id == "c1"
+    assert task.candidates[0].score == 0.9
+
+
+@pytest.mark.asyncio
+async def test_search_dispatcher_routes_rerank_false_to_finalize_queue():
+    """search_candidates.retrieved with rerank=False must publish a
+    SearchFinalizeTask to cpu.search.finalize on the search exchange."""
+    event = {
+        "event_type": "search_candidates.retrieved",
+        "query_job_id": "job-2",
+        "candidates": [{"chunk_id": "c1", "score": 0.9}, {"chunk_id": "c2", "score": 0.7}],
+        "k": 2,
+        "rerank": False,
+        "rerank_profile": None,
+    }
+    exchange_name, routing_key, task_dict = await _run_dispatcher_with_candidates_event(event)
+
+    assert exchange_name == "search"
+    assert routing_key == "cpu.search.finalize"
+
+    task = SearchFinalizeTask.model_validate(task_dict)
+    assert task.job_id == "job-2"
+    assert len(task.candidates) == 2
+
+
+@pytest.mark.asyncio
+async def test_search_dispatcher_defaults_rerank_profile_to_default():
+    """rerank=True with no rerank_profile should route via RERANK_CONFIGS['default']."""
+    event = {
+        "event_type": "search_candidates.retrieved",
+        "query_job_id": "job-3",
+        "candidates": [],
+        "k": 3,
+        "rerank": True,
+        "rerank_profile": None,
+    }
+    exchange_name, routing_key, task_dict = await _run_dispatcher_with_candidates_event(event)
+
+    assert routing_key == RERANK_CONFIGS["default"].queue
+
+
+@pytest.mark.asyncio
+async def test_search_dispatcher_skips_unknown_rerank_profile():
+    """An unrecognised rerank_profile must be skipped — no task published, no crash."""
+    exchanges: dict[str, AsyncMock] = {}
+
+    def _declare_exchange(name, *_args, **_kwargs):
+        if name not in exchanges:
+            exchanges[name] = AsyncMock()
+        return exchanges[name]
+
+    mock_channel = AsyncMock()
+    mock_channel.declare_exchange.side_effect = _declare_exchange
+    mock_rmq = AsyncMock()
+    mock_rmq.channel.return_value = mock_channel
+
+    event = {
+        "event_type": "search_candidates.retrieved",
+        "query_job_id": "job-4",
+        "candidates": [],
+        "k": 3,
+        "rerank": True,
+        "rerank_profile": "no-such-profile",
+    }
+    def _subscribe(topic, **_kwargs):
+        events = [event] if topic == "search_candidates.retrieved" else []
+        return FakeEventBusSubscription(events)
+
+    mock_bus = MagicMock()
+    mock_bus.subscribe = MagicMock(side_effect=_subscribe)
+
+    dispatcher = SearchDispatcher(mock_rmq, mock_bus)
+    try:
+        await asyncio.wait_for(dispatcher.run(), timeout=1.0)
+    except asyncio.TimeoutError:
+        pass
+
+    for exchange in exchanges.values():
+        exchange.publish.assert_not_called()

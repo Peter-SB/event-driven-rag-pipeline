@@ -5,6 +5,7 @@ from aio_pika import ExchangeType
 from aiormq.exceptions import ChannelPreconditionFailed
 
 from event_driven_rag_service.config.embedding_config import EMBED_CONFIGS
+from event_driven_rag_service.config.reranking_config import RERANK_CONFIGS
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,13 @@ BINDINGS: dict[str, list[tuple[str, str]]] = {
         ("gpu.embed.bge-small-en-v1.5",     "gpu.embed.bge-small-en-v1.5"),
         ("gpu.embed.qwen3-0.6b",            "gpu.embed.qwen3-0.6b"),
         ("gpu.embed.qwen3-4b",              "gpu.embed.qwen3-4b"),
+        # Reranking is GPU-bound (a real ~4B-param model), so its queue lives
+        # here on the embedding exchange rather than on "search" — GpuEmbedWorker
+        # already priority-scans this exchange's queues and stays warm the same
+        # way it does across embed models. "search" stays CPU-only (ANN run +
+        # the no-model finalize truncation).
+        ("gpu.rerank.qwen3-reranker-4b",    "gpu.rerank.qwen3-reranker-4b"),
+        ("gpu.rerank.qwen3-reranker-0.6b",  "gpu.rerank.qwen3-reranker-0.6b"),
     ],
     "inference": [
         ("gpu.infer_local.qwen3.5-4b",      "gpu.infer_local.qwen3.5-4b"),
@@ -53,7 +61,7 @@ BINDINGS: dict[str, list[tuple[str, str]]] = {
     ],
     "search": [
         ("cpu.search.run",                  "cpu.search.run"),
-        ("cpu.search.rank",                 "cpu.search.rank"),
+        ("cpu.search.finalize",             "cpu.search.finalize"),
     ],
 }
 
@@ -68,31 +76,35 @@ DLQ_QUEUES:   list[str] = [f"dlq.{q}" for q in _WORK_QUEUES]
 
 
 def verify_embedding_topology() -> None:
-    """Fail loudly if EMBED_CONFIGS and BINDINGS['embedding'] have drifted apart.
+    """Fail loudly if EMBED_CONFIGS/RERANK_CONFIGS and BINDINGS['embedding'] drift apart.
 
-    ChunkDispatcher and SearchDispatcher publish embed tasks using
-    ``EMBED_CONFIGS[task_type].queue`` as the routing key. If that queue isn't
-    declared here, the message is silently dropped by RabbitMQ's topic
-    exchange — no exception, no DLQ entry, just missing embeddings. Run this
-    at process startup (not just in tests) so a deploy with mismatched config
-    crashes immediately instead of failing silently in production.
+    ChunkDispatcher and SearchDispatcher publish embed/rerank tasks using
+    ``EMBED_CONFIGS[task_type].queue`` / ``RERANK_CONFIGS[profile].queue`` as
+    the routing key. If that queue isn't declared here, the message is
+    silently dropped by RabbitMQ's topic exchange — no exception, no DLQ
+    entry, just missing embeddings or a search job stuck in "reranking"
+    forever. Run this at process startup (not just in tests) so a deploy with
+    mismatched config crashes immediately instead of failing silently in
+    production.
     """
     declared = {queue for _, queue in BINDINGS["embedding"]}
-    configured = {cfg.queue for cfg in EMBED_CONFIGS.values()}
+    configured = {cfg.queue for cfg in EMBED_CONFIGS.values()} | {
+        cfg.queue for cfg in RERANK_CONFIGS.values()
+    }
 
     missing = configured - declared
     if missing:
         raise RuntimeError(
-            f"EMBED_CONFIGS references queues not declared in BINDINGS['embedding']: "
-            f"{sorted(missing)}. Embed tasks routed to these queues would be silently "
-            f"dropped. Add them to task_queue.BINDINGS['embedding']."
+            f"EMBED_CONFIGS/RERANK_CONFIGS reference queues not declared in "
+            f"BINDINGS['embedding']: {sorted(missing)}. Tasks routed to these queues "
+            f"would be silently dropped. Add them to task_queue.BINDINGS['embedding']."
         )
 
     orphaned = declared - configured
     if orphaned:
         logger.warning(
             "BINDINGS['embedding'] declares queues not referenced by any EMBED_CONFIGS "
-            "entry (dead queues, safe to remove if intentional): %s",
+            "or RERANK_CONFIGS entry (dead queues, safe to remove if intentional): %s",
             sorted(orphaned),
         )
 

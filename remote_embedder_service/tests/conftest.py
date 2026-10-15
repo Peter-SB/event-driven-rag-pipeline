@@ -41,15 +41,42 @@ class FakeEncoder:
         return [seed] + [0.0] * (self.dim - 1)
 
 
+class FakeReranker:
+    """Deterministic stand-in for the Qwen3-Reranker causal LM.
+
+    Scores by (bounded) lexical overlap between query and document — enough
+    to exercise ordering and the input-alignment contract without loading a
+    real model.
+    """
+
+    def __init__(self, spec_id: str = "") -> None:
+        self.spec_id = spec_id
+        self.calls: list[tuple[str, list[str]]] = []
+
+    def score(self, query: str, documents: list[str]) -> list[float]:
+        self.calls.append((query, list(documents)))
+        query_terms = set(query.lower().split())
+        scores = []
+        for doc in documents:
+            doc_terms = set(doc.lower().split())
+            overlap = len(query_terms & doc_terms)
+            scores.append(overlap / max(len(query_terms), 1))
+        return scores
+
+
 class RecordingLoader:
-    """Loader that hands out FakeEncoders and remembers what it was asked for."""
+    """Loader that hands out FakeEncoders/FakeRerankers and remembers what it
+    was asked for. Dispatches by `spec.kind`, mirroring
+    `remote_embedder.manager.default_loader`."""
 
     def __init__(self, dim_override: int | None = None) -> None:
         self.loaded: list[str] = []
         self.dim_override = dim_override
 
-    def __call__(self, spec: ModelSpec, settings: Settings) -> FakeEncoder:
+    def __call__(self, spec: ModelSpec, settings: Settings) -> FakeEncoder | FakeReranker:
         self.loaded.append(spec.id)
+        if spec.kind == "rerank":
+            return FakeReranker(spec.id)
         return FakeEncoder(self.dim_override or spec.dim, spec.id)
 
 

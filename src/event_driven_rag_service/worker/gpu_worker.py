@@ -29,13 +29,18 @@ from __future__ import annotations
 
 import asyncio
 import gc
+import json
 import logging
 import time
 from dataclasses import dataclass
+from typing import cast
 
 from event_driven_rag_service.tasks.embed_task import EmbedTask
+from event_driven_rag_service.tasks.search_tasks import SearchRankTask
+from event_driven_rag_service.tasks.registry import AnyTask, parse_task
 from event_driven_rag_service.worker.base_worker import BaseWorker
 from event_driven_rag_service.handlers.embed_handler import EmbedHandler, EmbeddingModel
+from event_driven_rag_service.handlers.rerank_handler import RerankHandler, RerankerModel
 from event_driven_rag_service.infrastructure.metrics import record_model_unload_time
 
 logger = logging.getLogger(__name__)
@@ -47,8 +52,8 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class WorkerMessage:
-    """A parsed RabbitMQ message carrying a typed EmbedTask."""
-    task: EmbedTask
+    """A parsed RabbitMQ message carrying a typed task (EmbedTask or SearchRankTask)."""
+    task: AnyTask
     delivery_tag: int
 
 
@@ -65,8 +70,13 @@ class GpuEmbedWorker(BaseWorker):
     rabbitmq_url    : pika-compatible URL
     model_queues    : priority-ordered list of (model_name, queue_name) pairs;
                       index 0 has the highest priority
-    model_loader    : callable(model_name: str) -> EmbeddingModel  (blocking)
+    model_loader    : callable(model_name: str) -> EmbeddingModel | RerankerModel  (blocking)
     handler         : EmbedHandler with injected DB / event-bus dependencies
+    rerank_handler  : RerankHandler with injected DB / event-bus dependencies.
+                      Only needed if `model_queues` includes any RERANK_CONFIGS
+                      queue — a batch pulled from one is routed here instead of
+                      `handler`, keyed off the parsed task's type rather than
+                      the queue name (the message shape is the source of truth).
     loop            : asyncio event loop that owns the DB pool;
                       a new loop is created if not provided
     max_batch       : max messages collected per queue poll, used for any model
@@ -84,6 +94,7 @@ class GpuEmbedWorker(BaseWorker):
         model_queues: list[tuple[str, str]],
         model_loader,
         handler: EmbedHandler,
+        rerank_handler: RerankHandler | None = None,
         loop: asyncio.AbstractEventLoop | None = None,
         max_batch: int = 32,
         model_max_batch: dict[str, int] | None = None,
@@ -105,12 +116,17 @@ class GpuEmbedWorker(BaseWorker):
         self._model_queues = model_queues
         self._load_model = model_loader
         self._handler = handler
+        self._rerank_handler = rerank_handler
         self._loop = loop or asyncio.new_event_loop()
         self._max_batch = max_batch
         self._idle_timeout_s = idle_timeout_s
         self._idle_sleep_s = idle_sleep_s
 
-        self._model: EmbeddingModel | None = None
+        # Holds whichever protocol the currently-warm queue needs — an
+        # EmbeddingModel for gpu.embed.* queues, a RerankerModel for
+        # gpu.rerank.* ones. Which one is in play is determined by the parsed
+        # task type in _process_batch, not by any type check here.
+        self._model: EmbeddingModel | RerankerModel | None = None
         self._current_model_name: str | None = None
 
     # ------------------------------------------------------------------
@@ -209,15 +225,22 @@ class GpuEmbedWorker(BaseWorker):
         channel,
         raw: list[tuple[int, bytes]],
     ) -> list[WorkerMessage]:
-        """Deserialize raw (delivery_tag, body) pairs; nack malformed messages."""
+        """Deserialize raw (delivery_tag, body) pairs; nack malformed messages.
+
+        Uses the generic task registry (not EmbedTask directly) so this
+        worker can also drive a rerank queue — one queue only ever carries
+        one task kind (its dispatcher only ever publishes one type there), so
+        the batch itself is homogeneous; `_process_batch` still branches
+        explicitly on the parsed type rather than assuming that.
+        """
         batch: list[WorkerMessage] = []
         for delivery_tag, body in raw:
             try:
-                task = EmbedTask.model_validate_json(body)
+                task = parse_task(json.loads(body))
                 batch.append(WorkerMessage(task=task, delivery_tag=delivery_tag))
             except Exception:
                 logger.warning(
-                    "GpuEmbedWorker: malformed embed message (tag=%s) — discarding",
+                    "GpuEmbedWorker: malformed message (tag=%s) — discarding",
                     delivery_tag,
                 )
                 self._nack(channel, delivery_tag, requeue=False)
@@ -262,8 +285,37 @@ class GpuEmbedWorker(BaseWorker):
     ) -> tuple[list[WorkerMessage], list[WorkerMessage]]:
         assert self._model is not None, "_process_batch called without a loaded model"
 
-        chunk_msgs = [m for m in batch if m.task.task_type == "chunk"]
-        query_msgs = [m for m in batch if m.task.task_type == "query"]
+        if isinstance(batch[0].task, SearchRankTask):
+            return self._process_rerank_batch(batch, model_name)
+        return self._process_embed_batch(batch, model_name)
+
+    def _process_rerank_batch(
+        self,
+        batch: list[WorkerMessage],
+        model_name: str,
+    ) -> tuple[list[WorkerMessage], list[WorkerMessage]]:
+        assert self._rerank_handler is not None, (
+            f"GpuEmbedWorker received a SearchRankTask batch for {model_name!r} but "
+            "was constructed without a rerank_handler"
+        )
+        reranker = cast(RerankerModel, self._model)
+        ok: list[WorkerMessage] = []
+        failed: list[WorkerMessage] = []
+        for msg in batch:
+            assert isinstance(msg.task, SearchRankTask)
+            success = self._loop.run_until_complete(
+                self._rerank_handler.handle(msg.task, model_name, reranker)
+            )
+            (ok if success else failed).append(msg)
+        return ok, failed
+
+    def _process_embed_batch(
+        self,
+        batch: list[WorkerMessage],
+        model_name: str,
+    ) -> tuple[list[WorkerMessage], list[WorkerMessage]]:
+        chunk_msgs = [m for m in batch if isinstance(m.task, EmbedTask) and m.task.task_type == "chunk"]
+        query_msgs = [m for m in batch if isinstance(m.task, EmbedTask) and m.task.task_type == "query"]
 
         logger.info(
             "GpuEmbedWorker: processing batch split — queries=%d chunks=%d model=%s",
@@ -272,21 +324,23 @@ class GpuEmbedWorker(BaseWorker):
             model_name,
         )
 
+        encoder = cast(EmbeddingModel, self._model)
         ok: list[WorkerMessage] = []
         failed: list[WorkerMessage] = []
 
         # Query tasks first — search latency is sensitive; chunk batches can wait.
         for msg in query_msgs:
+            assert isinstance(msg.task, EmbedTask)
             success = self._loop.run_until_complete(
-                self._handler.embed_query(msg.task, model_name, self._model)
+                self._handler.embed_query(msg.task, model_name, encoder)
             )
             (ok if success else failed).append(msg)
 
         if chunk_msgs:
-            chunk_tasks = [m.task for m in chunk_msgs]
+            chunk_tasks = [m.task for m in chunk_msgs if isinstance(m.task, EmbedTask)]
             task_to_msg = {id(t): m for t, m in zip(chunk_tasks, chunk_msgs)}
             ok_tasks, fail_tasks = self._loop.run_until_complete(
-                self._handler.embed_chunks(chunk_tasks, model_name, self._model)
+                self._handler.embed_chunks(chunk_tasks, model_name, encoder)
             )
             ok.extend(task_to_msg[id(t)] for t in ok_tasks if id(t) in task_to_msg)
             failed.extend(task_to_msg[id(t)] for t in fail_tasks if id(t) in task_to_msg)

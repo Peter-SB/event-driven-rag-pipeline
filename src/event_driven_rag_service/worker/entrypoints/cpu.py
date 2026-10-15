@@ -3,14 +3,15 @@
 Run with:
     python -m event_driven_rag_service.worker.entrypoints.cpu
 
-Starts two consumers in a single process sharing one DB pool:
-  - CpuChunkWorker  → cpu.chunk.post   (chunking tasks)
-  - CpuSearchWorker → cpu.search.run   (search execution tasks)
+Starts three consumers in a single process sharing one DB pool:
+  - CpuChunkWorker          → cpu.chunk.post       (chunking tasks)
+  - CpuSearchWorker         → cpu.search.run        (search execution tasks)
+  - CpuSearchFinalizeWorker → cpu.search.finalize   (non-reranked result truncation)
 
 Each worker gets its own pika connection (pika is not thread-safe across
 connections).  Signal handling is set up once in the main thread;
-the search worker runs in a daemon thread and stops when the chunk
-worker's main thread exits.
+the search and search-finalize workers run in daemon threads and stop when
+the chunk worker's main thread exits.
 """
 from __future__ import annotations
 
@@ -31,8 +32,10 @@ from event_driven_rag_service.repository.chunk_repository import ChunkRepository
 from event_driven_rag_service.repository.search_job_repository import SearchJobRepository
 from event_driven_rag_service.worker.cpu_worker import CpuChunkWorker
 from event_driven_rag_service.worker.cpu_search_worker import CpuSearchWorker
+from event_driven_rag_service.worker.cpu_search_finalize_worker import CpuSearchFinalizeWorker
 from event_driven_rag_service.handlers.chunk_handler import ChunkPostHandler
 from event_driven_rag_service.handlers.search_handler import SearchHandler
+from event_driven_rag_service.handlers.search_finalize_handler import SearchFinalizeHandler
 
 # Replace logging.basicConfig() — routes all stdlib logging.getLogger() calls through structlog.
 setup_observability("rag-cpu-worker")
@@ -122,16 +125,28 @@ def main() -> None:
         loop=loop,
     )
 
-    # Signal handler stops both workers
+    finalize_handler = SearchFinalizeHandler(
+        job_store=job_repo,
+        chunks=chunk_repo,
+        event_log=event_bus,
+    )
+    finalize_worker = CpuSearchFinalizeWorker(
+        rabbitmq_url=settings.rabbitmq_url,
+        handler=finalize_handler,
+        loop=loop,
+    )
+
+    # Signal handler stops all three workers
     def _shutdown(sig, _frame):
-        logger.info("Signal %s received — shutting down both CPU workers", sig)
+        logger.info("Signal %s received — shutting down all CPU workers", sig)
         chunk_worker._running = False
         search_worker._running = False
+        finalize_worker._running = False
 
     signal.signal(signal.SIGINT, _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
 
-    logger.info("Starting CpuChunkWorker and CpuSearchWorker")
+    logger.info("Starting CpuChunkWorker, CpuSearchWorker, and CpuSearchFinalizeWorker")
 
     search_thread = threading.Thread(
         target=_run_worker_thread,
@@ -141,12 +156,22 @@ def main() -> None:
     )
     search_thread.start()
 
+    finalize_thread = threading.Thread(
+        target=_run_worker_thread,
+        args=(finalize_worker, loop),
+        daemon=True,
+        name="cpu-search-finalize-worker",
+    )
+    finalize_thread.start()
+
     # Run chunk worker in the main thread (owns the event loop and DB pool)
     _run_worker_thread(chunk_worker, loop)
 
-    # Wait briefly for the search thread to drain
+    # Wait briefly for the daemon threads to drain
     search_worker._running = False
+    finalize_worker._running = False
     search_thread.join(timeout=10.0)
+    finalize_thread.join(timeout=10.0)
 
     loop.run_until_complete(pool.close())
     loop.close()

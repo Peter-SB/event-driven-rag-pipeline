@@ -81,16 +81,20 @@ All exchanges are `direct`. Routing key == queue name — explicit, debuggable, 
 **Queue pattern:** `{worker_type}.{task}.{qualifier}`  
 **DLQ pattern:** `dlq.{worker_type}.{task}.{qualifier}`
 
-| Exchange    | Queue                         |
-|-------------|-------------------------------|
-| `ingestion` | `cpu.chunk.post`              |
-| `embedding` | `gpu.embed.bge-base-v1.5`     |
-| `embedding` | `gpu.embed.qwen3-0.6b`        |
-| `inference` | `gpu.infer_local.qwen3.5-4b`  |
-| `inference` | `io.infer_api.chatgpt-4o`     |
-| `search`    | `cpu.search.run`              |
-| `search`    | `cpu.search.rank`             |
-| `dlx`       | `dlq.{queue_name}`            |
+| Exchange    | Queue                              |
+|-------------|-------------------------------------|
+| `ingestion` | `cpu.chunk.post`                    |
+| `embedding` | `gpu.embed.bge-base-v1.5`           |
+| `embedding` | `gpu.embed.qwen3-0.6b`              |
+| `embedding` | `gpu.rerank.qwen3-reranker-4b`      |
+| `embedding` | `gpu.rerank.qwen3-reranker-0.6b`    |
+| `inference` | `gpu.infer_local.qwen3.5-4b`        |
+| `inference` | `io.infer_api.chatgpt-4o`           |
+| `search`    | `cpu.search.run`                    |
+| `search`    | `cpu.search.finalize`               |
+| `dlx`       | `dlq.{queue_name}`                  |
+
+Reranking is GPU-bound (Qwen3-Reranker-4B, a real ~4B-param model), so its queues live on the `embedding` exchange — GpuEmbedWorker priority-scans them the same way it does across embed models, staying warm until the queue drains. `search` stays CPU-only: `cpu.search.run` executes the pgvector ANN query; `cpu.search.finalize` truncates the candidate pool to k and completes the job when a search didn't ask for reranking (the no-model counterpart to the GPU rerank path — see the search flow below).
 
 Each work queue carries `x-dead-letter-exchange: dlx` and `x-dead-letter-routing-key: dlq.{queue_name}`, so failed messages route automatically to the corresponding DLQ.
 
@@ -248,9 +252,9 @@ flowchart TD
 │ RABBITMQ EXCHANGES + QUEUES (direct exchanges, routed by key)       │
 │                                                                     │
 │  ingestion exchange:  cpu.chunk.post                               │
-│  embedding exchange:  gpu.embed.{model} (per model)                │
+│  embedding exchange:  gpu.embed.{model}, gpu.rerank.{model}        │
 │  inference exchange:  gpu.infer_* and io.infer_*                   │
-│  search exchange:     cpu.search.run, cpu.search.rank              │
+│  search exchange:     cpu.search.run, cpu.search.finalize          │
 │  dlx exchange:        dlq.* (dead letter sinks)                    │
 └────────────────────────────┬────────────────────────────────────────┘
                              │

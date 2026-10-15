@@ -42,7 +42,8 @@ class FakeSearchJobRepo:
         pass
 
     async def create_job(
-        self, query: str, k: int, embedding_profile: str, chunks_table: str, library_id: str = ""
+        self, query: str, k: int, embedding_profile: str, chunks_table: str, library_id: str = "",
+        rerank: bool = False, rerank_profile: Optional[str] = None,
     ) -> str:
         self._counter += 1
         job_id = f"fake-{self._counter:04d}"
@@ -54,6 +55,8 @@ class FakeSearchJobRepo:
             "k": k,
             "embedding_profile": embedding_profile,
             "chunks_table": chunks_table,
+            "rerank": rerank,
+            "rerank_profile": rerank_profile,
             "embedding": None,
             "results": None,
             "error": None,
@@ -222,6 +225,76 @@ def test_submit_search_creates_job_in_repo(client, fake_repo):
     assert job["query"] == "stored query"
     assert job["k"] == 7
     assert job["library_id"] == "test"
+
+
+def test_search_page_has_rerank_toggle_unchecked_by_default(client):
+    html = client.get("/ui/search").text
+    assert "Advanced (rerank)" in html
+    assert 'name="rerank"' in html
+    assert "checked" not in html.split('name="rerank"')[1].split(">")[0]
+
+
+def test_submit_without_rerank_defaults_to_off(client, fake_repo):
+    client.post(
+        "/ui/search/submit",
+        data={"query": "plain", "library_id": "main", "chunk_type": "body", "k": "10"},
+    )
+    job = next(iter(fake_repo._jobs.values()))
+    assert job["rerank"] is False
+    assert job["rerank_profile"] is None
+
+
+def test_submit_without_rerank_emits_event_with_rerank_off(client):
+    client.post(
+        "/ui/search/submit",
+        data={"query": "plain", "library_id": "main", "chunk_type": "body", "k": "10"},
+    )
+    event = client.app.state.event_bus.drain_topic("search_job.created")[0]
+    assert event["rerank"] is False
+    assert event["rerank_profile"] is None
+
+
+def test_submit_with_rerank_creates_rerank_job(client, fake_repo):
+    client.post(
+        "/ui/search/submit",
+        data={"query": "fancy", "library_id": "main", "chunk_type": "body", "k": "10", "rerank": "true"},
+    )
+    job = next(iter(fake_repo._jobs.values()))
+    assert job["rerank"] is True
+    assert job["rerank_profile"] == "default"
+
+
+def test_submit_with_rerank_emits_event_with_default_profile(client):
+    client.post(
+        "/ui/search/submit",
+        data={"query": "fancy", "library_id": "main", "chunk_type": "body", "k": "10", "rerank": "true"},
+    )
+    event = client.app.state.event_bus.drain_topic("search_job.created")[0]
+    assert event["rerank"] is True
+    assert event["rerank_profile"] == "default"
+
+
+def test_submit_with_rerank_row_is_tagged(client):
+    resp = client.post(
+        "/ui/search/submit",
+        data={"query": "fancy", "library_id": "main", "chunk_type": "body", "k": "10", "rerank": "true"},
+    )
+    assert "rerank-tag" in resp.text
+
+
+def test_submit_without_rerank_row_is_not_tagged(client):
+    resp = client.post(
+        "/ui/search/submit",
+        data={"query": "plain", "library_id": "main", "chunk_type": "body", "k": "10"},
+    )
+    assert "rerank-tag" not in resp.text
+
+
+def test_poll_shows_reranking_message(client, fake_repo):
+    job_id = _create_job(client)
+    fake_repo.set_status(job_id, "reranking")
+    resp = client.get(f"/ui/search/{job_id}/poll")
+    assert "Reranking candidates" in resp.text
 
 
 # ---------------------------------------------------------------------------
