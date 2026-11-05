@@ -1,13 +1,13 @@
-"""Opt-in checks of playlist recommendation against a *real* library database.
+"""Opt-in checks of folder suggestion against a *real* library database.
 
 Run with the homelab Postgres (strictly read-only: the pool sets
 ``default_transaction_read_only=on`` so any accidental write errors out):
 
-    RECOMMEND_LIVE_DB_URL=postgresql://rag:rag@192.168.0.234:5432/rag \
-    RECOMMEND_LIVE_LIBRARY=reddit_posts_main RECOMMEND_LIVE_FOLDER=1 \
-        pytest -m live_db tests/integration/test_recommend_live.py -s
+    SUGGEST_LIVE_DB_URL=postgresql://rag:rag@192.168.0.234:5432/rag \
+    SUGGEST_LIVE_LIBRARY=reddit_posts_main SUGGEST_LIVE_FOLDER=1 \
+        pytest -m live_db tests/integration/test_folder_suggestion_live.py -s
 
-Skipped unless RECOMMEND_LIVE_DB_URL is set. Not part of the default run.
+Skipped unless SUGGEST_LIVE_DB_URL is set. Not part of the default run.
 
 What it checks: hold out part of a folder, recommend from the rest, and measure how
 many held-out stories come back. That recall is a *lower bound* on quality: a
@@ -23,18 +23,18 @@ import asyncpg
 import pytest
 
 from event_driven_rag_service.config.embedding_config import EMBED_CONFIGS
-from event_driven_rag_service.repository.recommendation_repository import RecommendationRepository
-from event_driven_rag_service.services.playlist_recommendation import RecommendParams, recommend_for_playlist
+from event_driven_rag_service.repository.folder_suggestion_repository import FolderSuggestionRepository
+from event_driven_rag_service.services.folder_suggestion import SuggestParams, suggest_for_folder
 from event_driven_rag_service.utils.build_table_names import build_chunk_table_name
 
-DB_URL = os.environ.get("RECOMMEND_LIVE_DB_URL")
-LIBRARY = os.environ.get("RECOMMEND_LIVE_LIBRARY", "reddit_posts_main")
-FOLDERS = [int(x) for x in os.environ.get("RECOMMEND_LIVE_FOLDER", "1,2,13").split(",")]
+DB_URL = os.environ.get("SUGGEST_LIVE_DB_URL")
+LIBRARY = os.environ.get("SUGGEST_LIVE_LIBRARY", "reddit_posts_main")
+FOLDERS = [int(x) for x in os.environ.get("SUGGEST_LIVE_FOLDER", "1,2,13").split(",")]
 K = 30
 
 pytestmark = [
     pytest.mark.live_db,
-    pytest.mark.skipif(not DB_URL, reason="RECOMMEND_LIVE_DB_URL not set"),
+    pytest.mark.skipif(not DB_URL, reason="SUGGEST_LIVE_DB_URL not set"),
 ]
 
 POSTS = f"posts_{LIBRARY}"
@@ -46,7 +46,7 @@ async def repo():
     pool = await asyncpg.create_pool(
         DB_URL, min_size=1, max_size=2, server_settings={"default_transaction_read_only": "on"}
     )
-    yield RecommendationRepository(pool), pool
+    yield FolderSuggestionRepository(pool), pool
     await pool.close()
 
 
@@ -63,7 +63,7 @@ async def test_heldout_recall_beats_random_by_a_wide_margin(repo, folder):
         f"SELECT count(*) FROM {POSTS} p WHERE NOT COALESCE(is_deleted, FALSE) AND EXISTS "
         f"(SELECT 1 FROM {CHUNKS} c WHERE c.post_id = p.post_id AND c.embedding IS NOT NULL)"
     )
-    vectors = await r.playlist_embeddings(CHUNKS, await r.folder_post_ids(POSTS, folder))
+    vectors = await r.folder_embeddings(CHUNKS, await r.folder_post_ids(POSTS, folder))
     ids = sorted(vectors)
     assert len(ids) >= 12, "folder too small for a hold-out test"
 
@@ -75,8 +75,8 @@ async def test_heldout_recall_beats_random_by_a_wide_margin(repo, folder):
         rng.shuffle(shuffled)
         cut = len(ids) // 4
         held, train = set(shuffled[:cut]), shuffled[cut:]
-        res = await recommend_for_playlist(
-            r, posts_table=POSTS, chunks_table=CHUNKS, post_ids=train, params=RecommendParams(k=K)
+        res = await suggest_for_folder(
+            r, posts_table=POSTS, chunks_table=CHUNKS, post_ids=train, params=SuggestParams(k=K)
         )
         got = [i.post_id for i in res.items]
         assert len(got) == K and len(set(got)) == K and not set(got) & set(train)
@@ -88,10 +88,10 @@ async def test_heldout_recall_beats_random_by_a_wide_margin(repo, folder):
     assert lift > 3.0
 
 
-async def test_recommendations_are_hot_and_ordered_sensibly(repo):
+async def test_folder_suggestionations_are_hot_and_ordered_sensibly(repo):
     r, _ = repo
-    res = await recommend_for_playlist(
-        r, posts_table=POSTS, chunks_table=CHUNKS, folder_id=FOLDERS[0], params=RecommendParams(k=20)
+    res = await suggest_for_folder(
+        r, posts_table=POSTS, chunks_table=CHUNKS, folder_id=FOLDERS[0], params=SuggestParams(k=20)
     )
     assert res.embedded >= 10 and res.themes and sum(t.size for t in res.themes) == res.embedded
     assert len(res.items) == 20

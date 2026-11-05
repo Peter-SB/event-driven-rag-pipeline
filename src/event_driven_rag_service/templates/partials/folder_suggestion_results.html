@@ -1,6 +1,6 @@
 <div class="panel summary">
-  Playlist <b>{{ playlist_key }}</b>: {{ result.embedded }}
-  {% if result.playlist_size != result.embedded %}of {{ result.playlist_size }}{% endif %} stories embedded
+  Folder <b>{{ folder_key }}</b>: {{ result.embedded }}
+  {% if result.folder_size != result.embedded %}of {{ result.folder_size }}{% endif %} stories embedded
   {% if result.missing_post_ids %}({{ result.missing_post_ids|length }} not embedded yet){% endif %}
   &middot; {{ result.themes|length }} theme{{ '' if result.themes|length == 1 else 's' }}
   {% if result.silhouette is not none %}(separation {{ '%.2f'|format(result.silhouette) }}){% endif %}
@@ -25,27 +25,31 @@
   <div>
     <a class="title" href="/ui/post/{{ library_id }}/{{ item.post_id }}" target="_blank">{{ item.title or ('Post ' ~ item.post_id) }}</a>
     <div class="meta">{% if item.subreddit %}r/{{ item.subreddit }} &middot; {% endif %}theme {{ item.theme + 1 }} &middot; heat {{ '%.3f'|format(item.score) }}</div>
-    <div class="heat" title="kNN density: mean similarity to the closest playlist stories"><i style="width: {{ [[((item.score - 0.5) / 0.4 * 100)|round|int, 4]|max, 100]|min }}%"></i></div>
+    <div class="heat" title="kNN density: mean similarity to the closest folder stories"><i style="width: {{ [[((item.score - 0.5) / 0.4 * 100)|round|int, 4]|max, 100]|min }}%"></i></div>
     <div class="because">close to:
       {% for b in item.because %}<br>&bull; {{ b.title }} ({{ '%.2f'|format(b.similarity) }}){% endfor %}
     </div>
   </div>
   <form class="actions">
     <input type="hidden" name="library_id" value="{{ library_id }}">
-    <input type="hidden" name="playlist_key" value="{{ playlist_key }}">
+    <input type="hidden" name="folder_key" value="{{ folder_key }}">
     <input type="hidden" name="post_id" value="{{ item.post_id }}">
     <input type="hidden" name="title" value="{{ item.title }}">
-    <button class="y" name="verdict" value="yes" title="Yes - add to this playlist"
-            hx-post="/ui/recommend/feedback" hx-target="#rec-{{ item.post_id }}" hx-swap="outerHTML">&#128077;</button>
-    <button class="n" name="verdict" value="no" title="No - hide from this playlist"
-            hx-post="/ui/recommend/feedback" hx-target="#rec-{{ item.post_id }}" hx-swap="outerHTML">&#128078;</button>
+    <button class="vn" name="verdict" value="very_no" title="Very no - hide it and demote lookalikes"
+            hx-post="/ui/folder-suggestions/feedback" hx-target="#rec-{{ item.post_id }}" hx-swap="outerHTML">Very no</button>
+    <button class="n" name="verdict" value="no" title="No - hide from this folder"
+            hx-post="/ui/folder-suggestions/feedback" hx-target="#rec-{{ item.post_id }}" hx-swap="outerHTML">No</button>
+    <button class="y" name="verdict" value="yes" title="Yes - add to this folder"
+            hx-post="/ui/folder-suggestions/feedback" hx-target="#rec-{{ item.post_id }}" hx-swap="outerHTML">Yes</button>
+    <button class="vy" name="verdict" value="very_yes" title="Very yes - add it and weight it double"
+            hx-post="/ui/folder-suggestions/feedback" hx-target="#rec-{{ item.post_id }}" hx-swap="outerHTML">Very yes</button>
   </form>
 </div>
 {% endfor %}
 
 {% if result.items %}
 <div class="refresh-row">
-  <button class="refresh" hx-post="/ui/recommend/submit" hx-include="#rec-form" hx-target="#rec-results">Refresh with my feedback</button>
-  <span class="hint">&#128077; stories join the playlist, &#128078; stories disappear; the rest stay unrated.</span>
+  <button class="refresh" hx-post="/ui/folder-suggestions/submit" hx-include="#rec-form" hx-target="#rec-results">Refresh with my feedback</button>
+  <span class="hint">Yes / very yes stories join the folder (very yes counts double). No / very no stories disappear, and very no also pushes down lookalikes. The rest stay unrated.</span>
 </div>
 {% endif %}

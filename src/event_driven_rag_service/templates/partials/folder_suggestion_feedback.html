@@ -1,0 +1,22 @@
+<div class="card {{ 'yes' if verdict in ('yes', 'very_yes') else ('no' if verdict in ('no', 'very_no') else '') }}" id="rec-{{ post_id }}">
+  <div class="rank">{% if verdict == 'very_yes' %}&#128077;&#128077;{% elif verdict == 'yes' %}&#128077;{% elif verdict == 'no' %}&#128078;{% elif verdict == 'very_no' %}&#128078;&#128078;{% else %}&middot;{% endif %}</div>
+  <div>
+    <a class="title" href="/ui/post/{{ library_id }}/{{ post_id }}" target="_blank">{{ title or ('Post ' ~ post_id) }}</a>
+    <div class="meta">
+      {% if error %}{{ error }}
+      {% elif verdict == 'very_yes' %}Added to this folder's positives, counted double; applies on the next refresh.
+      {% elif verdict == 'yes' %}Added to this folder's positives; counts on the next refresh.
+      {% elif verdict == 'no' %}Hidden from this folder's suggestions.
+      {% elif verdict == 'very_no' %}Hidden from this folder's suggestions, and lookalikes are pushed down.
+      {% else %}Back to unrated.{% endif %}
+    </div>
+  </div>
+  <form class="actions">
+    <input type="hidden" name="library_id" value="{{ library_id }}">
+    <input type="hidden" name="folder_key" value="{{ folder_key }}">
+    <input type="hidden" name="post_id" value="{{ post_id }}">
+    <input type="hidden" name="title" value="{{ title }}">
+    <button class="undo" type="button" hx-post="/ui/folder-suggestions/feedback" hx-include="closest form"
+            hx-vals='{"verdict": "clear"}' hx-target="#rec-{{ post_id }}" hx-swap="outerHTML">Undo</button>
+  </form>
+</div>

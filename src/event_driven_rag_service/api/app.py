@@ -42,7 +42,7 @@ from event_driven_rag_service.api.sync_folders import router as sync_folders_rou
 from event_driven_rag_service.api.sync_highlights import router as sync_highlights_router
 from event_driven_rag_service.api.search import router as search_router
 from event_driven_rag_service.api.similar import router as similar_router
-from event_driven_rag_service.api.recommend import router as recommend_router
+from event_driven_rag_service.api.folder_suggestion import router as folder_suggestion_router
 from event_driven_rag_service.api.ui import router as ui_router
 from event_driven_rag_service.api.maintenance import router as maintenance_router
 
@@ -112,7 +112,7 @@ app.include_router(sync_folders_router)
 app.include_router(sync_highlights_router)
 app.include_router(search_router)
 app.include_router(similar_router)
-app.include_router(recommend_router)
+app.include_router(folder_suggestion_router)
 app.include_router(ui_router)
 app.include_router(maintenance_router)
 

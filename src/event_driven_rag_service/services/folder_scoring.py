@@ -1,19 +1,19 @@
-"""Pure maths for playlist recommendation — numpy only, no I/O.
+"""Pure maths for folder suggestion — numpy only, no I/O.
 
 The idea
 --------
-A playlist is a *set* of embedding vectors, usually with several themes, so a
+A folder is a *set* of embedding vectors, usually with several themes, so a
 single average vector (centroid) lands in the empty space between themes. We
 instead:
 
-1. **Cluster** the playlist (spherical k-means, k picked by silhouette) — used
+1. **Cluster** the folder (spherical k-means, k picked by silhouette) — used
    only to *generate candidates*: one ANN query per cluster centroid.
 2. **Score** each candidate with a *kNN density estimate*: the mean cosine
-   similarity to its ``knn`` nearest playlist items. This is the "heat" at the
+   similarity to its ``knn`` nearest folder items. This is the "heat" at the
    candidate's location. We deliberately do not fit a real density (KDE / GMM
    likelihood) — in 384–2560 dimensions distances concentrate and bandwidths are
    meaningless, whereas a nearest-neighbour similarity stays well behaved and
-   handles multi-theme playlists with no clustering assumptions.
+   handles multi-theme folders with no clustering assumptions.
 3. **Diversify** with MMR so the top results are not ten near-duplicates.
 
 Everything here works on L2-normalised vectors so a dot product is the cosine
@@ -41,11 +41,11 @@ def normalise(matrix: np.ndarray) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
-class PlaylistProfile:
-    """The playlist's themes. ``centroids`` are unit vectors, one per cluster."""
+class FolderProfile:
+    """The folder's themes. ``centroids`` are unit vectors, one per cluster."""
 
     centroids: np.ndarray        # (k, D)
-    labels: np.ndarray           # (P,) cluster index of each playlist item
+    labels: np.ndarray           # (P,) cluster index of each folder item
     sizes: list[int]             # items per cluster
     silhouette: float | None     # None when k == 1 (undefined)
 
@@ -119,14 +119,14 @@ def silhouette(x: np.ndarray, labels: np.ndarray) -> float:
 
 
 def build_profile(
-    playlist: np.ndarray,
+    folder: np.ndarray,
     *,
     max_clusters: int = 5,
     min_cluster_size: int = 4,
     min_silhouette: float = 0.15,
     seed: int = 0,
-) -> PlaylistProfile:
-    """Split the playlist into themes, or keep it as one when it has no clear structure.
+) -> FolderProfile:
+    """Split the folder into themes, or keep it as one when it has no clear structure.
 
     Tries k = 2 .. min(max_clusters, P // min_cluster_size) and keeps the k with
     the best silhouette, provided no cluster is a singleton and the silhouette
@@ -138,9 +138,9 @@ def build_profile(
     ranking is by kNN density, so a one-theme fallback costs no recall (measured:
     recall@30 0.109 with 1 cluster vs 0.113-0.116 with 3-5).
     """
-    x = normalise(playlist)
+    x = normalise(folder)
     n = len(x)
-    one = PlaylistProfile(
+    one = FolderProfile(
         centroids=normalise(x.sum(axis=0)),
         labels=np.zeros(n, dtype=int),
         sizes=[n],
@@ -150,7 +150,7 @@ def build_profile(
     if k_max < 2:
         return one
 
-    best: tuple[float, PlaylistProfile] | None = None
+    best: tuple[float, FolderProfile] | None = None
     for k in range(2, k_max + 1):
         labels, centroids = spherical_kmeans(x, k, seed=seed)
         sizes = [int((labels == c).sum()) for c in range(k)]
@@ -158,7 +158,7 @@ def build_profile(
             continue
         s = silhouette(x, labels)
         if best is None or s > best[0]:
-            best = (s, PlaylistProfile(centroids=centroids, labels=labels, sizes=sizes, silhouette=s))
+            best = (s, FolderProfile(centroids=centroids, labels=labels, sizes=sizes, silhouette=s))
     if best is None or best[0] < min_silhouette:
         return one
     return best[1]
@@ -170,15 +170,24 @@ def build_profile(
 
 @dataclass(frozen=True)
 class DensityScores:
-    heat: np.ndarray          # (C,) mean similarity to the knn nearest playlist items
-    neighbours: np.ndarray    # (C, m) playlist indices of those neighbours, nearest first
+    heat: np.ndarray          # (C,) mean similarity to the knn nearest folder items
+    neighbours: np.ndarray    # (C, m) folder indices of those neighbours, nearest first
     neighbour_sims: np.ndarray  # (C, m)
 
 
-def knn_density(candidates: np.ndarray, playlist: np.ndarray, knn: int = 3) -> DensityScores:
-    """kNN density estimate ("heat") of each candidate within the playlist."""
+def knn_density(
+    candidates: np.ndarray,
+    folder: np.ndarray,
+    knn: int = 3,
+    weights: np.ndarray | None = None,
+) -> DensityScores:
+    """kNN density estimate ("heat") of each candidate within the folder.
+
+    ``weights`` (one per folder item, default all 1) makes some items count for more in
+    the neighbour average: a "very yes" story pulls its lookalikes up harder.
+    """
     c = normalise(candidates)
-    p = normalise(playlist)
+    p = normalise(folder)
     m = max(1, min(knn, len(p)))
     sims = c @ p.T
     top = np.argpartition(-sims, m - 1, axis=1)[:, :m]
@@ -186,7 +195,24 @@ def knn_density(candidates: np.ndarray, playlist: np.ndarray, knn: int = 3) -> D
     order = np.argsort(-top_sims, axis=1)
     top = np.take_along_axis(top, order, axis=1)
     top_sims = np.take_along_axis(top_sims, order, axis=1)
-    return DensityScores(heat=top_sims.mean(axis=1), neighbours=top, neighbour_sims=top_sims)
+    if weights is None:
+        heat = top_sims.mean(axis=1)
+    else:
+        w = np.asarray(weights, dtype=np.float32)[top]
+        heat = (top_sims * w).sum(axis=1) / w.sum(axis=1)
+    return DensityScores(heat=heat, neighbours=top, neighbour_sims=top_sims)
+
+
+def avoid_penalty(candidates: np.ndarray, avoid: np.ndarray, strength: float) -> np.ndarray:
+    """Per-candidate penalty for being close to stories the user said "very no" to.
+
+    ``strength`` x the highest cosine similarity to any avoided story (never negative),
+    so lookalikes of a rejected story rank below equally hot candidates that are not.
+    """
+    if len(avoid) == 0:
+        return np.zeros(len(candidates), dtype=np.float32)
+    sims = normalise(candidates) @ normalise(avoid).T
+    return strength * np.clip(sims.max(axis=1), 0.0, None)
 
 
 def mmr_select(

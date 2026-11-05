@@ -1,11 +1,12 @@
-"""Unit tests for the pure playlist-scoring maths (no DB, no network)."""
+"""Unit tests for the pure folder-scoring maths (no DB, no network)."""
 from __future__ import annotations
 
 import numpy as np
 import pytest
 
-from event_driven_rag_service.services.playlist_scoring import (
+from event_driven_rag_service.services.folder_scoring import (
     build_profile,
+    avoid_penalty,
     knn_density,
     mmr_select,
     normalise,
@@ -36,7 +37,7 @@ def test_two_themes_are_found_and_one_theme_is_not_split(centres):
 
 
 @pytest.mark.parametrize("n", [1, 2, 3, 7])
-def test_tiny_playlists_get_a_single_theme(centres, n):
+def test_tiny_folders_get_a_single_theme(centres, n):
     rng = np.random.default_rng(3)
     profile = build_profile(blob(rng, centres[0], n))
     assert profile.k == 1 and profile.sizes == [n] and profile.silhouette is None
@@ -49,7 +50,7 @@ def test_profile_is_deterministic(centres):
     assert np.array_equal(a.labels, b.labels)
 
 
-def test_heat_follows_the_playlist_not_its_average(centres):
+def test_heat_follows_the_folder_not_its_average(centres):
     """A candidate in either theme is hot; one in the empty middle (where the mean sits) is not."""
     rng = np.random.default_rng(5)
     pl = np.vstack([blob(rng, centres[0], 12), blob(rng, centres[1], 12)])
@@ -66,7 +67,7 @@ def test_heat_follows_the_playlist_not_its_average(centres):
     assert (middle @ mean).item() > (in_a @ mean).item()
 
 
-def test_knn_reports_nearest_playlist_items_first_and_caps_at_playlist_size(centres):
+def test_knn_reports_nearest_folder_items_first_and_caps_at_folder_size(centres):
     rng = np.random.default_rng(6)
     pl = blob(rng, centres[0], 2)
     d = knn_density(pl[:1], pl, knn=10)  # more neighbours requested than items
@@ -89,3 +90,23 @@ def test_mmr_handles_k_larger_than_pool_and_empty(centres):
     cands = blob(rng, centres[0], 3)
     assert sorted(mmr_select(np.array([3.0, 2.0, 1.0]), cands, 10)) == [0, 1, 2]
     assert mmr_select(np.array([]), np.zeros((0, D)), 5) == []
+
+
+def test_weights_pull_heat_toward_the_heavier_neighbour(centres):
+    rng = np.random.default_rng(8)
+    fl = np.vstack([blob(rng, centres[0], 1), blob(rng, centres[1], 1)])
+    cand = normalise(fl[0] + fl[1])  # equidistant-ish between the two
+    plain = knn_density(cand, fl, knn=2).heat[0]
+    toward_0 = knn_density(cand, fl, knn=2, weights=np.array([3.0, 1.0])).heat[0]
+    s0, s1 = (cand @ normalise(fl).T).ravel()
+    assert toward_0 == pytest.approx((3 * s0 + s1) / 4, abs=1e-5)
+    assert plain == pytest.approx((s0 + s1) / 2, abs=1e-5)
+
+
+def test_avoid_penalty_scales_with_closeness_and_is_zero_without_avoided_items(centres):
+    rng = np.random.default_rng(9)
+    near, far = blob(rng, centres[0], 1), blob(rng, centres[2], 1)
+    avoid = blob(rng, centres[0], 1)
+    pen = avoid_penalty(np.vstack([near, far]), avoid, strength=0.5)
+    assert pen[0] > pen[1] >= 0
+    assert (avoid_penalty(near, np.empty((0, near.shape[1])), 0.5) == 0).all()

@@ -1,11 +1,11 @@
-"""Read-only SQL for playlist recommendation.
+"""Read-only SQL for folder suggestion.
 
 Every method is a SELECT. Table names are built by the caller from validated
 inputs (``validate_library_id`` + ``build_chunk_table_name``), never from user text.
 
 pgvector's ``vector`` type has no HNSW index above 2000 dimensions, so for wide
 models (Qwen3-4B = 2560) these queries are exact sequential scans. That is fine
-for a personal library (thousands of rows); see docs/Recommendations.md.
+for a personal library (thousands of rows); see docs/FolderSuggestions.md.
 """
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ def parse_vector(raw: str | list | tuple | np.ndarray) -> np.ndarray:
     return np.asarray(raw, dtype=np.float32)
 
 
-class RecommendationRepository:
+class FolderSuggestionRepository:
     def __init__(self, pool: asyncpg.Pool) -> None:
         self._pool = pool
 
@@ -51,7 +51,7 @@ class RecommendationRepository:
                 raise ChunkTableNotFoundError(posts_table)
         return [r["post_id"] for r in rows]
 
-    async def playlist_embeddings(self, chunks_table: str, post_ids: list[int]) -> dict[int, np.ndarray]:
+    async def folder_embeddings(self, chunks_table: str, post_ids: list[int]) -> dict[int, np.ndarray]:
         """One vector per post (mean of its embedded chunks). Posts with none are absent."""
         async with self._pool.acquire() as conn:
             try:
@@ -113,59 +113,97 @@ class RecommendationRepository:
         return {r["post_id"]: r["title"] or "" for r in rows}
 
 
-class FeedbackRepository:
-    """Explicit yes/no verdicts on recommendations, per (library, playlist).
+VERDICTS = ("very_no", "no", "yes", "very_yes")
+POSITIVE_VERDICTS = ("yes", "very_yes")
+NEGATIVE_VERDICTS = ("very_no", "no")
 
-    This is the only write path in the recommendation feature. Absence of a row
-    means *unrated*, never "no": a story missing from a folder is not a negative.
-    Reads tolerate the table not existing yet so a read-only database still works.
+
+class FeedbackRepository:
+    """Explicit four-level verdicts on suggestions, per (library, folder).
+
+    ``very_no`` / ``no`` / ``yes`` / ``very_yes``. This is the only write path in the
+    folder-suggestion feature. Absence of a row means *unrated*, never "no": a story
+    missing from a folder is not a negative. Reads tolerate the table not existing yet
+    so a read-only database still works.
     """
 
-    TABLE = "recommendation_feedback"
+    TABLE = "folder_suggestion_feedback"
+    _schema_ready = False  # per process: the migration below runs once
 
     def __init__(self, pool: asyncpg.Pool) -> None:
         self._pool = pool
 
-    async def verdicts(self, library_id: str, playlist_key: str) -> dict[int, str]:
-        """``{post_id: "yes" | "no"}`` — empty if nothing rated or the table is absent."""
+    async def verdicts(self, library_id: str, folder_key: str) -> dict[int, str]:
+        """``{post_id: verdict}`` — empty if nothing rated or the table is absent."""
         async with self._pool.acquire() as conn:
             try:
                 rows = await conn.fetch(
-                    f"SELECT post_id, verdict FROM {self.TABLE} WHERE library_id = $1 AND playlist_key = $2",
+                    f"SELECT post_id, verdict FROM {self.TABLE} WHERE library_id = $1 AND folder_key = $2",
                     library_id,
-                    playlist_key,
+                    folder_key,
                 )
-            except asyncpg.exceptions.UndefinedTableError:
+            except (asyncpg.exceptions.UndefinedTableError, asyncpg.exceptions.UndefinedColumnError):
                 return {}
         return {r["post_id"]: r["verdict"] for r in rows}
 
-    async def set_verdict(self, library_id: str, playlist_key: str, post_id: int, verdict: str) -> None:
-        """Record ``yes``/``no``; ``clear`` removes the rating (back to unrated)."""
+    async def _ensure_schema(self, conn) -> None:
+        """Create the table, or bring an older one up to date.
+
+        The first version was named ``recommendation_feedback`` with a ``playlist_key``
+        column and only allowed ``yes`` / ``no``; existing rows stay valid.
+        """
+        if FeedbackRepository._schema_ready:
+            return
+        await conn.execute(
+            f"""
+            DO $$ BEGIN
+                IF to_regclass('recommendation_feedback') IS NOT NULL
+                   AND to_regclass('{self.TABLE}') IS NULL THEN
+                    ALTER TABLE recommendation_feedback RENAME TO {self.TABLE};
+                END IF;
+                IF EXISTS (SELECT 1 FROM information_schema.columns
+                           WHERE table_name = '{self.TABLE}' AND column_name = 'playlist_key') THEN
+                    ALTER TABLE {self.TABLE} RENAME COLUMN playlist_key TO folder_key;
+                END IF;
+            END $$;
+            CREATE TABLE IF NOT EXISTS {self.TABLE} (
+                library_id TEXT NOT NULL,
+                folder_key TEXT NOT NULL,
+                post_id    INTEGER NOT NULL,
+                verdict    TEXT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                PRIMARY KEY (library_id, folder_key, post_id)
+            );
+            DO $$ DECLARE c record; BEGIN
+                FOR c IN SELECT conname FROM pg_constraint
+                         WHERE conrelid = '{self.TABLE}'::regclass AND contype = 'c' LOOP
+                    EXECUTE format('ALTER TABLE {self.TABLE} DROP CONSTRAINT %I', c.conname);
+                END LOOP;
+            END $$;
+            ALTER TABLE {self.TABLE} ADD CONSTRAINT {self.TABLE}_verdict_check
+                CHECK (verdict IN ({", ".join(f"'{v}'" for v in VERDICTS)}));
+            """
+        )
+        FeedbackRepository._schema_ready = True
+
+    async def set_verdict(self, library_id: str, folder_key: str, post_id: int, verdict: str) -> None:
+        """Record a verdict; ``clear`` removes the rating (back to unrated)."""
+        if verdict != "clear" and verdict not in VERDICTS:
+            raise ValueError(f"verdict must be one of {VERDICTS} or 'clear', got {verdict!r}")
         async with self._pool.acquire() as conn:
-            await conn.execute(
-                f"""
-                CREATE TABLE IF NOT EXISTS {self.TABLE} (
-                    library_id   TEXT NOT NULL,
-                    playlist_key TEXT NOT NULL,
-                    post_id      INTEGER NOT NULL,
-                    verdict      TEXT NOT NULL CHECK (verdict IN ('yes', 'no')),
-                    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-                    PRIMARY KEY (library_id, playlist_key, post_id)
-                )
-                """
-            )
+            await self._ensure_schema(conn)
             if verdict == "clear":
                 await conn.execute(
-                    f"DELETE FROM {self.TABLE} WHERE library_id=$1 AND playlist_key=$2 AND post_id=$3",
-                    library_id, playlist_key, post_id,
+                    f"DELETE FROM {self.TABLE} WHERE library_id=$1 AND folder_key=$2 AND post_id=$3",
+                    library_id, folder_key, post_id,
                 )
             else:
                 await conn.execute(
                     f"""
-                    INSERT INTO {self.TABLE} (library_id, playlist_key, post_id, verdict)
+                    INSERT INTO {self.TABLE} (library_id, folder_key, post_id, verdict)
                     VALUES ($1, $2, $3, $4)
-                    ON CONFLICT (library_id, playlist_key, post_id)
+                    ON CONFLICT (library_id, folder_key, post_id)
                     DO UPDATE SET verdict = EXCLUDED.verdict, created_at = now()
                     """,
-                    library_id, playlist_key, post_id, verdict,
+                    library_id, folder_key, post_id, verdict,
                 )
