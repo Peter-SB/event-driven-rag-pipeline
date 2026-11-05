@@ -14,6 +14,8 @@ from typing import AsyncIterator
 from unittest.mock import AsyncMock, MagicMock
 
 from event_driven_rag_service.data_models.chunk import Chunk, ChunkMetadata
+from event_driven_rag_service.data_models.folder import Folder
+from event_driven_rag_service.data_models.highlight import Highlight
 from event_driven_rag_service.data_models.post import Post
 from event_driven_rag_service.infrastructure.event_bus import EventBusBase
 
@@ -94,6 +96,40 @@ def make_post(
         addedAt=_BASE_TS,
         updatedAt=ts,
         summary=summary,
+        **kwargs,
+    )
+
+
+def make_folder(
+    folder_id: int = 1,
+    name: str | None = None,
+    updated_at: datetime | None = None,
+    **kwargs,
+) -> Folder:
+    """Build a minimal valid Folder. Override any field via kwargs."""
+    return Folder(
+        id=folder_id,
+        name=name or f"Folder {folder_id}",
+        createdAt=_BASE_TS,
+        updatedAt=updated_at or _BASE_TS,
+        **kwargs,
+    )
+
+
+def make_highlight(
+    highlight_id: int = 1,
+    post_id: int = 1,
+    text: str = "A highlighted passage.",
+    updated_at: datetime | None = None,
+    **kwargs,
+) -> Highlight:
+    """Build a minimal valid Highlight. Override any field via kwargs."""
+    return Highlight(
+        id=highlight_id,
+        postId=post_id,
+        text=text,
+        createdAt=_BASE_TS,
+        updatedAt=updated_at or _BASE_TS,
         **kwargs,
     )
 

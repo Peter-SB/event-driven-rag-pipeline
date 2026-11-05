@@ -32,10 +32,14 @@ from event_driven_rag_service.infrastructure.event_bus import create_event_bus
 setup_observability("rag-api")
 from event_driven_rag_service.infrastructure.task_queue import setup_topology
 from event_driven_rag_service.repository.post_repository import PostRepository
+from event_driven_rag_service.repository.folder_repository import FolderRepository
+from event_driven_rag_service.repository.highlight_repository import HighlightRepository
 from event_driven_rag_service.repository.search_job_repository import SearchJobRepository
 from event_driven_rag_service.repository.maintenance_repository import MaintenanceRepository
 from event_driven_rag_service.api.sync import router as sync_router
 from event_driven_rag_service.api.sync_legacy import router as sync_legacy_router
+from event_driven_rag_service.api.sync_folders import router as sync_folders_router
+from event_driven_rag_service.api.sync_highlights import router as sync_highlights_router
 from event_driven_rag_service.api.search import router as search_router
 from event_driven_rag_service.api.similar import router as similar_router
 from event_driven_rag_service.api.ui import router as ui_router
@@ -68,6 +72,8 @@ async def lifespan(app: FastAPI):
 
     # --- Repositories ----------------------------------------------------
     post_repo = PostRepository(pool)
+    folder_repo = FolderRepository(pool)
+    highlight_repo = HighlightRepository(pool)
     search_job_repo = SearchJobRepository(pool)
     await search_job_repo.ensure_table()
     maintenance_repo = MaintenanceRepository(pool)
@@ -77,6 +83,8 @@ async def lifespan(app: FastAPI):
     app.state.rmq = rmq
     app.state.event_bus = event_bus
     app.state.post_repo = post_repo
+    app.state.folder_repo = folder_repo
+    app.state.highlight_repo = highlight_repo
     app.state.search_job_repo = search_job_repo
     app.state.maintenance_repo = maintenance_repo
     app.state.seen_post_tables: set[str] = set()
@@ -99,6 +107,8 @@ app = FastAPI(
 
 app.include_router(sync_router)
 app.include_router(sync_legacy_router)
+app.include_router(sync_folders_router)
+app.include_router(sync_highlights_router)
 app.include_router(search_router)
 app.include_router(similar_router)
 app.include_router(ui_router)

@@ -41,7 +41,8 @@ Postgres + pgvector
 | Component | Files | Responsibility |
 |-----------|-------|-----------------|
 | **API** | `api/app.py`, `api/sync.py` | FastAPI server, POST /posts/sync endpoint |
-| **Repositories** | `repository/{post,chunk}_repository.py` | Async Postgres access (asyncpg) |
+| **Repositories** | `repository/{post,chunk,folder,highlight}_repository.py` | Async Postgres access (asyncpg) |
+| **Folder / highlight sync** | `api/sync_folders.py`, `api/sync_highlights.py` | `POST /folders/sync`, `POST /highlights/sync` — store-only, library-scoped tables, no events (see CONTEXT.md) |
 | **Handlers** | `handlers/{chunk,embed}_handler.py` | Business logic: receive task → do work → emit event |
 | **Workers** | `worker/{cpu,gpu}_worker.py` | Long-lived processes, consume RabbitMQ, delegate to handlers |
 | **Dispatchers** | `dispatchers/{post,chunk,embedding,search}_dispatcher.py` | Bridge event log → RabbitMQ (translate events to tasks) |

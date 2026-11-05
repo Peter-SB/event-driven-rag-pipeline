@@ -13,6 +13,8 @@ conventions used across code, events, tasks, and infrastructure.
 | **Post** | Source-agnostic content unit (Reddit post, article, note, …). Identified by `external_id` + `external_source`. The primary key is `post_id` (auto-incremented in Postgres). |
 | **Chunk** | A text window derived from a Post field, targeted at ~500 words with ~10% overlap. Identified by a UUID `id`. Carries `text_hash` for deduplication. |
 | **Embedding** | A dense float vector stored in the same row as the Chunk (nullable until the GPU worker fills it). Vector dimension is model-dependent (see Embed Config). |
+| **Folder** | A user-created, optionally nested grouping of Posts. Identified by the client's `folder_id`. Stored only — nothing downstream consumes it yet. Post membership lives on `Post.folder_ids`. |
+| **Highlight** | A passage the user captured from a Post (`text`, optional `note` and character offsets). Identified by the client's `highlight_id`, tied to a `post_id`. Stored only — not chunked or embedded. |
 
 ---
 
@@ -69,6 +71,21 @@ always `EMBED_CONFIGS[task_type].queue` — never derived from the model name (s
 | `ingestion` | topic | `cpu.chunk.post` | `cpu.chunk.post` | CpuChunkWorker |
 | `embedding` | topic | `EMBED_CONFIGS[task_type].queue` | `gpu.embed.bge-base-en-v1.5`, `gpu.embed.bge-small-en-v1.5`, `gpu.embed.qwen3-0.6b` | GpuEmbedWorker |
 | `dlx` | direct | `dlq.{queue}` | `dlq.*` | (manual review) |
+
+---
+
+## Folder & Highlight Tables
+
+Library-scoped like posts: `folders_{library_id}` and `highlights_{library_id}`, created
+lazily by `POST /folders/sync` and `POST /highlights/sync`. Same wire conventions as
+`/posts/sync` (camelCase aliases, required `library_id`, per-item `results`).
+
+- **Freshness**: upsert only writes when the incoming `updated_at` is newer, exactly as posts.
+- **Soft delete**: deletions arrive as `is_deleted = true` with a newer `updated_at`; rows are never removed.
+- **No foreign keys**: `folders.parent_id` and `highlights.post_id` are plain integers so a
+  batch can arrive child-first / before its post.
+- **No events**: unlike posts, these routes publish nothing to the event log. Storage only for now.
+- **Timestamps**: naive values (the client's SQLite `CURRENT_TIMESTAMP`) are read as UTC.
 
 ---
 
@@ -168,6 +185,8 @@ are active.
 ---
 
 ## Out of Scope (MVP)
+
+- Chunking / embedding / searching Folders and Highlights (stored only)
 
 - Semantic search / vector similarity queries
 - Inference / categorisation / analysis pipeline (analysis chunk tasks deferred)
