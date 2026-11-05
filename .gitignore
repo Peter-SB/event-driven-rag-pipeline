@@ -8,3 +8,9 @@ docs/notes/
 *.db*
 
 logs/
+
+# data sensitive experiments
+clustering/
+reranking/
+
+/temp/

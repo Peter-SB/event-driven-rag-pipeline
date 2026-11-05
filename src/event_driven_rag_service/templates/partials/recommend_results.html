@@ -1,0 +1,51 @@
+<div class="panel summary">
+  Playlist <b>{{ playlist_key }}</b>: {{ result.embedded }}
+  {% if result.playlist_size != result.embedded %}of {{ result.playlist_size }}{% endif %} stories embedded
+  {% if result.missing_post_ids %}({{ result.missing_post_ids|length }} not embedded yet){% endif %}
+  &middot; {{ result.themes|length }} theme{{ '' if result.themes|length == 1 else 's' }}
+  {% if result.silhouette is not none %}(separation {{ '%.2f'|format(result.silhouette) }}){% endif %}
+  &middot; {{ result.candidates_considered }} candidates scored
+  {% if result.rejected %}&middot; {{ result.rejected }} dismissed{% endif %}
+  <div class="themes">
+    {% for t in result.themes %}
+    <div class="theme"><b>Theme {{ t.index + 1 }}</b> &middot; {{ t.size }} stories
+      {% for e in t.exemplars %}<span>{{ e.title }}</span>{% endfor %}
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+{% if not result.items %}
+<div class="rec-error">No candidates found.</div>
+{% endif %}
+
+{% for item in result.items %}
+<div class="card" id="rec-{{ item.post_id }}">
+  <div class="rank">{{ item.rank }}</div>
+  <div>
+    <a class="title" href="/ui/post/{{ library_id }}/{{ item.post_id }}" target="_blank">{{ item.title or ('Post ' ~ item.post_id) }}</a>
+    <div class="meta">{% if item.subreddit %}r/{{ item.subreddit }} &middot; {% endif %}theme {{ item.theme + 1 }} &middot; heat {{ '%.3f'|format(item.score) }}</div>
+    <div class="heat" title="kNN density: mean similarity to the closest playlist stories"><i style="width: {{ [[((item.score - 0.5) / 0.4 * 100)|round|int, 4]|max, 100]|min }}%"></i></div>
+    <div class="because">close to:
+      {% for b in item.because %}<br>&bull; {{ b.title }} ({{ '%.2f'|format(b.similarity) }}){% endfor %}
+    </div>
+  </div>
+  <form class="actions">
+    <input type="hidden" name="library_id" value="{{ library_id }}">
+    <input type="hidden" name="playlist_key" value="{{ playlist_key }}">
+    <input type="hidden" name="post_id" value="{{ item.post_id }}">
+    <input type="hidden" name="title" value="{{ item.title }}">
+    <button class="y" name="verdict" value="yes" title="Yes - add to this playlist"
+            hx-post="/ui/recommend/feedback" hx-target="#rec-{{ item.post_id }}" hx-swap="outerHTML">&#128077;</button>
+    <button class="n" name="verdict" value="no" title="No - hide from this playlist"
+            hx-post="/ui/recommend/feedback" hx-target="#rec-{{ item.post_id }}" hx-swap="outerHTML">&#128078;</button>
+  </form>
+</div>
+{% endfor %}
+
+{% if result.items %}
+<div class="refresh-row">
+  <button class="refresh" hx-post="/ui/recommend/submit" hx-include="#rec-form" hx-target="#rec-results">Refresh with my feedback</button>
+  <span class="hint">&#128077; stories join the playlist, &#128078; stories disappear; the rest stay unrated.</span>
+</div>
+{% endif %}

@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Playlist Recommendations</title>
+  <script src="https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, -apple-system, sans-serif; background: #f0f2f5; color: #1a1a2e; min-height: 100vh; }
+    header { background: #1a1a2e; color: #fff; padding: 1rem 2rem; display: flex; align-items: center; gap: .75rem; }
+    header h1 { font-size: 1.25rem; font-weight: 600; letter-spacing: -.02em; }
+    header a { margin-left: auto; font-size: .8rem; color: #c7d2fe; text-decoration: none; }
+    main { max-width: 900px; margin: 2rem auto; padding: 0 1.5rem; }
+    .card, .panel { background: #fff; border-radius: 12px; box-shadow: 0 1px 4px rgba(0,0,0,.08); }
+    .panel { padding: 1.25rem 1.5rem; margin-bottom: 1.5rem; }
+    .row { display: grid; grid-template-columns: 1.4fr 1fr 1fr 80px; gap: .75rem; align-items: end; }
+    .row2 { display: grid; grid-template-columns: 1fr 160px auto; gap: .75rem; align-items: end; margin-top: .75rem; }
+    .field { display: flex; flex-direction: column; gap: .35rem; }
+    .field label { font-size: .72rem; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: .05em; }
+    input, select { padding: .55rem .75rem; border: 1.5px solid #e0e0e0; border-radius: 8px; font-size: .9rem; background: #fafafa; }
+    input:focus, select:focus { outline: none; border-color: #6366f1; background: #fff; }
+    input[type=range] { padding: 0; accent-color: #6366f1; }
+    .hint { font-size: .75rem; color: #888; margin-top: .6rem; }
+    button.go, button.refresh { padding: .6rem 1.25rem; background: #6366f1; color: #fff; border: 0; border-radius: 8px; font-weight: 600; cursor: pointer; }
+    button.go:hover, button.refresh:hover { background: #4f46e5; }
+    .htmx-request button.go { opacity: .6; pointer-events: none; }
+    .summary { font-size: .9rem; color: #444; line-height: 1.5; }
+    .themes { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .75rem; }
+    .theme { background: #eef2ff; border-radius: 8px; padding: .5rem .75rem; font-size: .78rem; max-width: 280px; }
+    .theme b { color: #4338ca; }
+    .theme span { display: block; color: #666; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .card { padding: 1rem 1.25rem; margin-bottom: .75rem; display: grid; grid-template-columns: 2rem 1fr auto; gap: .9rem; align-items: start; }
+    .card.yes { border-left: 4px solid #16a34a; }
+    .card.no { border-left: 4px solid #dc2626; opacity: .55; }
+    .rank { font-weight: 700; color: #999; padding-top: .1rem; }
+    .title { font-weight: 600; color: #1a1a2e; text-decoration: none; }
+    .title:hover { color: #4f46e5; }
+    .meta { font-size: .75rem; color: #888; margin-top: .2rem; }
+    .heat { height: 6px; border-radius: 3px; background: #e5e7eb; margin-top: .55rem; max-width: 260px; overflow: hidden; }
+    .heat i { display: block; height: 100%; background: linear-gradient(90deg, #f59e0b, #ef4444); }
+    .because { font-size: .75rem; color: #666; margin-top: .45rem; line-height: 1.45; }
+    .actions { display: flex; gap: .4rem; }
+    .actions button, .undo { border: 1.5px solid #e0e0e0; background: #fff; border-radius: 8px; font-size: 1.05rem; padding: .35rem .6rem; cursor: pointer; }
+    .actions button.y:hover { border-color: #16a34a; background: #f0fdf4; }
+    .actions button.n:hover { border-color: #dc2626; background: #fef2f2; }
+    .undo { font-size: .75rem; }
+    .rec-error { background: #fef2f2; color: #991b1b; padding: .9rem 1.1rem; border-radius: 10px; }
+    .refresh-row { margin: 1rem 0; display: flex; gap: .75rem; align-items: center; }
+  </style>
+</head>
+<body>
+<header>
+  <h1>Playlist Recommendations</h1>
+  <a href="/ui/search">&larr; Search</a>
+</header>
+<main>
+  <form id="rec-form" class="panel" hx-post="/ui/recommend/submit" hx-target="#rec-results" hx-indicator="this">
+    <div class="row">
+      <div class="field"><label for="library_id">Library</label>
+        <input id="library_id" name="library_id" value="reddit_posts_main" required></div>
+      <div class="field"><label for="folder_id">Folder</label>
+        <input id="folder_id" name="folder_id" type="number" min="0" placeholder="e.g. 1"></div>
+      <div class="field"><label for="chunk_type">Embedding</label>
+        <select id="chunk_type" name="chunk_type">
+          {% for ct in chunk_types %}<option value="{{ ct }}" {% if ct == 'summary_title' %}selected{% endif %}>{{ ct }}</option>{% endfor %}
+        </select></div>
+      <div class="field"><label for="k">Show</label>
+        <input id="k" name="k" type="number" value="10" min="1" max="100"></div>
+    </div>
+    <div class="row2">
+      <div class="field"><label for="post_ids">&hellip;or post ids (overrides folder)</label>
+        <input id="post_ids" name="post_ids" placeholder="12, 45, 301"></div>
+      <div class="field"><label for="diversity">Variety</label>
+        <input id="diversity" name="diversity" type="range" min="0" max="1" step="0.1" value="0.3"></div>
+      <button class="go" type="submit">Recommend</button>
+    </div>
+    <p class="hint">A story missing from a playlist is <b>not</b> treated as &ldquo;no&rdquo;. Only your &#128078; counts as a no; &#128077; adds the story to the playlist.</p>
+  </form>
+  <div id="rec-results"></div>
+</main>
+</body>
+</html>

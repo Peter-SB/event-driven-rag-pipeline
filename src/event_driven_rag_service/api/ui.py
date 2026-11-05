@@ -5,6 +5,7 @@ import json
 import logging
 import re
 from datetime import datetime, timezone
+from html import escape as html_escape
 from pathlib import Path
 
 import asyncpg
@@ -12,11 +13,15 @@ from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
+from event_driven_rag_service.api.recommend import run_recommendation
 from event_driven_rag_service.api.search import SearchResultItem
 from event_driven_rag_service.config.embedding_config import EMBED_CONFIGS
 from event_driven_rag_service.events.search_events import SearchJobCreatedEvent
 from event_driven_rag_service.repository.chunk_repository import ChunkRepository
+from event_driven_rag_service.exceptions import ChunkTableNotFoundError
 from event_driven_rag_service.repository.post_repository import PostRepository
+from event_driven_rag_service.repository.recommendation_repository import FeedbackRepository
+from event_driven_rag_service.services.playlist_recommendation import EmptyPlaylistError, RecommendParams
 from event_driven_rag_service.repository.search_job_repository import SearchJobRepository
 from event_driven_rag_service.utils.build_table_names import build_chunk_table_name
 
@@ -227,4 +232,91 @@ async def post_page(library_id: str, post_id: int, request: Request) -> HTMLResp
         "body_text": post.body_text,
         "url": post.url,
         "created_at": created_at,
+    })
+
+
+# ---------------------------------------------------------------------------
+# Playlist recommendations
+# ---------------------------------------------------------------------------
+
+def _recommend_error(message: str, status_code: int = 422) -> HTMLResponse:
+    return HTMLResponse(f'<div class="rec-error">{html_escape(message)}</div>', status_code=status_code)
+
+
+@router.get("/recommend", response_class=HTMLResponse)
+async def recommend_page(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(request, "recommend.html", {
+        "chunk_types": list(EMBED_CONFIGS.keys()),
+    })
+
+
+@router.post("/recommend/submit", response_class=HTMLResponse)
+async def recommend_submit(
+    request: Request,
+    library_id: str = Form(...),
+    chunk_type: str = Form("summary_title"),
+    folder_id: str = Form(""),
+    post_ids: str = Form(""),
+    k: int = Form(10),
+    diversity: float = Form(0.3),
+) -> HTMLResponse:
+    if not re.match(r"^[a-z][a-z0-9_]*$", library_id):
+        return _recommend_error("Invalid library id — must match [a-z][a-z0-9_]*")
+    if chunk_type not in EMBED_CONFIGS:
+        return _recommend_error(f"Invalid chunk type — must be one of {list(EMBED_CONFIGS)}")
+
+    ids = [int(x) for x in re.findall(r"\d+", post_ids)]
+    folder = int(folder_id) if folder_id.strip().isdigit() else None
+    if ids:
+        folder = None  # an explicit list wins over a folder
+    elif folder is None:
+        return _recommend_error("Enter a folder number or a list of post ids.")
+
+    try:
+        key, result = await run_recommendation(
+            request.app.state.pool,
+            library_id=library_id,
+            chunk_type=chunk_type,
+            folder_id=folder,
+            post_ids=ids or None,
+            params=RecommendParams(k=max(1, min(k, 100)), diversity=max(0.0, min(diversity, 1.0))),
+        )
+    except ChunkTableNotFoundError as exc:
+        return _recommend_error(f"Table not found: {exc} — has this library been synced?", 404)
+    except EmptyPlaylistError as exc:
+        return _recommend_error(str(exc))
+
+    return templates.TemplateResponse(request, "partials/recommend_results.html", {
+        "library_id": library_id,
+        "playlist_key": key,
+        "result": result,
+    })
+
+
+@router.post("/recommend/feedback", response_class=HTMLResponse)
+async def recommend_feedback(
+    request: Request,
+    library_id: str = Form(...),
+    playlist_key: str = Form(...),
+    post_id: int = Form(...),
+    verdict: str = Form(...),
+    title: str = Form(""),
+) -> HTMLResponse:
+    """Record yes/no/clear for one card and return the card's new state."""
+    error = None
+    if verdict not in ("yes", "no", "clear") or not re.match(r"^[a-z][a-z0-9_]*$", library_id):
+        return _recommend_error("Bad feedback request", 422)
+    try:
+        await FeedbackRepository(request.app.state.pool).set_verdict(library_id, playlist_key, post_id, verdict)
+    except Exception as exc:  # e.g. read-only database
+        logger.warning("recommend feedback failed: %s", exc)
+        error = "Could not save feedback (is the database read-only?)"
+        verdict = "clear"
+    return templates.TemplateResponse(request, "partials/recommend_feedback.html", {
+        "library_id": library_id,
+        "playlist_key": playlist_key,
+        "post_id": post_id,
+        "title": title,
+        "verdict": verdict,
+        "error": error,
     })
