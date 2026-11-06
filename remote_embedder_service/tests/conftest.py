@@ -110,6 +110,7 @@ def settings() -> Settings:
         max_batch_size=32,
         idle_unload_s=900,
         reaper_interval_s=15,
+        pipeline_url="",
         enable_quantization=False,
         normalize_embeddings=True,
     )

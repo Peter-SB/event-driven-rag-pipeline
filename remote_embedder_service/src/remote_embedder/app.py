@@ -20,6 +20,7 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 
+from remote_embedder.backfill import BackfillTrigger
 from remote_embedder.config import Settings, settings as default_settings
 from remote_embedder.manager import (
     ModelLoadError,
@@ -59,6 +60,7 @@ def get_settings(request: Request) -> Settings:
 def create_app(
     settings: Settings | None = None,
     manager: ModelManager | None = None,
+    backfill: BackfillTrigger | None = None,
 ) -> FastAPI:
     cfg = settings or default_settings
     mgr = manager or ModelManager(cfg)
@@ -84,9 +86,14 @@ def create_app(
                 device,
             )
         mgr.start_reaper()
+        trigger = backfill if backfill is not None else BackfillTrigger.from_settings(cfg)
+        if trigger is not None:
+            trigger.start()
         try:
             yield
         finally:
+            if trigger is not None:
+                trigger.stop()
             mgr.stop_reaper()
             mgr.unload()
 

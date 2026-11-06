@@ -206,6 +206,22 @@ of the model into VRAM.
 | `LOG_DIR` | `logs` | |
 | `LOG_FILE` | `remote_embedder.log` | |
 | `LOG_MAX_LINES` | `10000` | Oldest lines dropped once the file exceeds this |
+| `PIPELINE_URL` | (empty) | e.g. `http://192.168.0.234:8000`. Set it to turn on the backfill below. |
+| `BACKFILL_INTERVAL_S` | `43200` | Seconds between backfill requests once one has succeeded (12h) |
+| `BACKFILL_RETRY_S` | `60` | Seconds between attempts while the pipeline is unreachable |
+| `BACKFILL_TIMEOUT_S` | `120` | Per-request timeout |
+
+### Backfill
+
+If this service is down, the pipeline may try the model on its own CPU. When that
+local run is killed for running over the GPU worker's memory cap
+(`worker/local_run_guard.py`), local runs of that model are blocked and its tasks are
+skipped, leaving the chunks unembedded. With `PIPELINE_URL` set, this service posts to
+`/maintenance/requeue-missing-embeddings` when it starts (retrying every
+`BACKFILL_RETRY_S` until the pipeline answers, so it also copes with starting before
+the network is up) and then every `BACKFILL_INTERVAL_S`. The endpoint is idempotent:
+it only re-queues chunks that are still unembedded. See
+[`backfill.py`](src/remote_embedder/backfill.py).
 
 ### Logging
 

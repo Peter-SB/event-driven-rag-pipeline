@@ -31,6 +31,7 @@ from event_driven_rag_service.infrastructure.task_queue import verify_embedding_
 from event_driven_rag_service.repository.chunk_repository import ChunkRepository
 from event_driven_rag_service.repository.search_job_repository import SearchJobRepository
 from event_driven_rag_service.worker.gpu_worker import GpuEmbedWorker
+from event_driven_rag_service.worker.local_run_guard import get_guard
 from event_driven_rag_service.worker.remote_embedding import build_fallback_model
 from event_driven_rag_service.worker.reranking import build_fallback_reranker
 from event_driven_rag_service.handlers.embed_handler import EmbedHandler
@@ -620,10 +621,13 @@ class _LazyLocalModel:
         return self._cfg.primary
 
     def encode(self, texts: list[str]) -> list[list[float]]:
-        with self._lock:
-            if self._model is None:
-                self._model = _load_local_model(self._cfg.primary)
-        return self._model.encode(texts)
+        # A load or encode that gets the process killed (the container's memory cap) must
+        # not be retried when RabbitMQ redelivers the message — see local_run_guard.py.
+        with get_guard().run(self._cfg.primary):
+            with self._lock:
+                if self._model is None:
+                    self._model = _load_local_model(self._cfg.primary)
+            return self._model.encode(texts)
 
 
 class _NoLocalFallback:

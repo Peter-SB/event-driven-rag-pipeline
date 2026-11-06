@@ -109,6 +109,11 @@ qwen3_4b_embed_cfg = EmbedConfig(
     dim=2560,
     remote_model="text-embedding-qwen3-embedding-4b",
     quantization="int8",
+    # Local fallback stays on, but the 4B weights need 10GB+ on the homelab CPU. That froze
+    # the 15GB host for 45 minutes before the gpu-worker got a memory cap. Now, if a local
+    # run is killed for running over, worker/local_run_guard.py blocks local runs of this
+    # model and the tasks are skipped; the remote embedder then finishes them through
+    # POST /maintenance/requeue-missing-embeddings (at its startup and every 12h).
     allow_local=True,
     max_batch=2,
     query_prefix=(

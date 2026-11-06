@@ -56,6 +56,22 @@ class Settings:
         default_factory=lambda: float(os.getenv("REAPER_INTERVAL_S", "15"))
     )
 
+    # Base URL of the pipeline API, e.g. http://192.168.0.234:8000. When set, this
+    # service POSTs /maintenance/requeue-missing-embeddings at startup (retrying
+    # every backfill_retry_s until the pipeline answers) and then every
+    # backfill_interval_s, so chunks skipped while this box was down get embedded.
+    # Empty disables it.
+    pipeline_url: str = field(default_factory=lambda: os.getenv("PIPELINE_URL", ""))
+    backfill_interval_s: float = field(
+        default_factory=lambda: float(os.getenv("BACKFILL_INTERVAL_S", "43200"))
+    )
+    backfill_retry_s: float = field(
+        default_factory=lambda: float(os.getenv("BACKFILL_RETRY_S", "60"))
+    )
+    backfill_timeout_s: float = field(
+        default_factory=lambda: float(os.getenv("BACKFILL_TIMEOUT_S", "120"))
+    )
+
     # Allow the int8 path at all. Off => every model loads at full/half precision
     # regardless of its registry `quantize` flag (useful on CPU-only boxes).
     enable_quantization: bool = field(
