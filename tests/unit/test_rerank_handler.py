@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
+from event_driven_rag_service.exceptions import EmbeddingUnavailableError
 from event_driven_rag_service.handlers.rerank_handler import RerankHandler
 from event_driven_rag_service.tasks.search_tasks import CandidateChunkRef, SearchRankTask
 from tests.utils.factories import FakeEventBus
@@ -24,6 +25,7 @@ class FakeSearchJobStore:
         self.marked_reranking: list[str] = []
         self.completed: list[tuple[str, list]] = []
         self.failed: list[tuple[str, str]] = []
+        self.failed_codes: list[str | None] = []
 
     async def get_job(self, job_id: str) -> Optional[Dict[str, Any]]:
         return self._job
@@ -34,8 +36,9 @@ class FakeSearchJobStore:
     async def complete_job(self, job_id: str, results: List[Dict]) -> None:
         self.completed.append((job_id, results))
 
-    async def fail_job(self, job_id: str, error: str) -> None:
+    async def fail_job(self, job_id: str, error: str, code: str | None = None) -> None:
         self.failed.append((job_id, error))
+        self.failed_codes.append(code)
 
 
 class FakeChunkHydrator:
@@ -206,5 +209,30 @@ async def test_handle_scoring_error_fails_job_and_returns_false():
     assert success is False
     assert len(job_store.failed) == 1
     assert "CUDA out of memory" in job_store.failed[0][1]
+    assert job_store.completed == []
+    assert bus.drain_topic("search_job.completed") == []
+
+
+@pytest.mark.asyncio
+async def test_handle_reranker_unavailable_fails_job_with_code_and_acks():
+    """The remote reranker going away mid-job is not retryable: the job fails
+    with the code the client recognises, and the message is acked (True), not
+    redelivered into the same failure."""
+    job_store = FakeSearchJobStore(job=_job())
+    hydrator = FakeChunkHydrator(rows={"c1": _row("c1", "some text")})
+    bus = FakeEventBus()
+
+    class _GoneReranker:
+        name = "gone"
+
+        def score(self, query, documents):
+            raise EmbeddingUnavailableError("remote down, allow_local=False")
+
+    handler = RerankHandler(job_store=job_store, chunks=hydrator, event_log=bus)
+    task = SearchRankTask(job_id="job-1", candidates=[CandidateChunkRef(chunk_id="c1", score=0.5)])
+    success = await handler.handle(task, "gone-model", _GoneReranker())
+
+    assert success is True
+    assert job_store.failed_codes == ["rerank_unavailable"]
     assert job_store.completed == []
     assert bus.drain_topic("search_job.completed") == []

@@ -210,11 +210,11 @@
         </div>
         <div class="field">
           <label for="k">Results</label>
-          <input id="k" name="k" type="number" value="10" min="1" max="100">
+          <input id="k" name="k" type="number" value="10" min="1" max="99">
         </div>
         <div class="field">
           <label for="rerank">Mode</label>
-          <label class="rerank-toggle" title="Fetch 3x candidates, then re-score them with a GPU reranker. Slower, usually more relevant.">
+          <label class="rerank-toggle" title="Re-score the results with a GPU reranker. Slower, usually more relevant.">
             <input id="rerank" name="rerank" type="checkbox" value="true">
             Advanced (rerank)
           </label>

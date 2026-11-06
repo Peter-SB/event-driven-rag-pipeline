@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Protocol
 from opentelemetry import trace
 
 from event_driven_rag_service.events.search_events import SearchJobCompletedEvent
+from event_driven_rag_service.exceptions import RERANK_UNAVAILABLE, EmbeddingUnavailableError
 from event_driven_rag_service.infrastructure.event_bus import EventBusBase
 from event_driven_rag_service.infrastructure.metrics import (
     record_search_job_completed,
@@ -52,7 +53,7 @@ class SearchJobStore(Protocol):
     async def get_job(self, job_id: str) -> Dict[str, Any] | None: ...
     async def mark_reranking(self, job_id: str) -> None: ...
     async def complete_job(self, job_id: str, results: List[Dict]) -> None: ...
-    async def fail_job(self, job_id: str, error: str) -> None: ...
+    async def fail_job(self, job_id: str, error: str, code: str | None = None) -> None: ...
 
 
 class ChunkHydrator(Protocol):
@@ -169,6 +170,20 @@ class RerankHandler:
                     "RerankHandler: job %s complete — %d results (elapsed=%.3fs)",
                     task.job_id, len(results), time.time() - start_time,
                 )
+                return True
+
+            except EmbeddingUnavailableError as exc:
+                # The remote reranker went away after POST /search checked it.
+                # Retrying cannot help until it is back, and a redelivered task
+                # would only fail again, so the job is failed with a code the
+                # client recognises and the message is acked.
+                logger.warning("RerankHandler: job %s — reranker unavailable: %s", task.job_id, exc)
+                await self._jobs.fail_job(
+                    task.job_id, "The reranker is not available right now.",
+                    code=RERANK_UNAVAILABLE,
+                )
+                record_search_job_completed("failed")
+                record_failure("rerank_unavailable", "gpu-worker")
                 return True
 
             except Exception as exc:

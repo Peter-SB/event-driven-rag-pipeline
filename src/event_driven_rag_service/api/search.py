@@ -9,6 +9,8 @@ The search pipeline is fully event-driven:
       → GpuEmbedWorker → search_query.embedded
       → EmbeddingDispatcher → SearchRunTask
       → CpuSearchWorker → results stored → search_job.completed
+      (rerank=true: the GPU worker reranks the k candidates on the remote
+       embedder first; POST /search answers 503 if that is unavailable)
 
 Clients poll GET /search/{job_id} until status is 'complete' or 'failed'.
 
@@ -26,7 +28,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from event_driven_rag_service.api.validators import validate_chunk_type, validate_library_id
 from event_driven_rag_service.config.embedding_config import EMBED_CONFIGS
+from event_driven_rag_service.config.reranking_config import RERANK_CONFIGS
 from event_driven_rag_service.events.search_events import SearchJobCreatedEvent
+from event_driven_rag_service.exceptions import RERANK_UNAVAILABLE
 from event_driven_rag_service.infrastructure.event_bus import EventBusBase
 from event_driven_rag_service.infrastructure.metrics import (
     record_search_job_created,
@@ -48,8 +52,20 @@ router = APIRouter(prefix="/search", tags=["search"])
 class SearchRequest(BaseModel):
     query: str = Field(..., min_length=1, description="Query text to search for")
     chunk_type: str = Field("body", description="Chunk type to search: body, summary_title, title")
-    k: int = Field(10, gt=0, le=999, description="Number of results to return")
+    k: int = Field(10, gt=0, le=99, description="Number of results to return")
     library_id: str = Field(..., description="Library to search (e.g. 'main')")
+    rerank: bool = Field(
+        False,
+        description=(
+            "Re-order the top candidates with the remote reranker. Remote-only: if the "
+            "GPU PC is unavailable the request fails with 503 and detail.code "
+            "'rerank_unavailable' instead of falling back, so the client can offer a "
+            "plain search (rerank=false)."
+        ),
+    )
+    rerank_profile: Optional[str] = Field(
+        None, description="Key into RERANK_CONFIGS; omitted uses 'default'. Ignored unless rerank=true"
+    )
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Reserved — ignored for now")
 
     model_config = ConfigDict(populate_by_name=True)
@@ -75,6 +91,7 @@ class SearchStatusResponse(BaseModel):
     status: str
     results: Optional[List[SearchResultItem]] = None
     error: Optional[str] = None
+    error_code: Optional[str] = None  # e.g. "rerank_unavailable"; see exceptions.py
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -118,6 +135,32 @@ async def create_search(req: SearchRequest, request: Request) -> SearchJobRespon
                 ),
             )
 
+        # Reranking is remote-only, so find out now, while the client is still
+        # waiting on this request, whether the GPU PC can do it. Checked before the
+        # job exists so a refusal leaves nothing behind.
+        rerank_profile = None
+        if req.rerank:
+            rerank_profile = req.rerank_profile or "default"
+            rerank_cfg = RERANK_CONFIGS.get(rerank_profile)
+            if rerank_cfg is None:
+                raise HTTPException(
+                    status_code=422, detail=f"Unknown rerank_profile {rerank_profile!r}"
+                )
+            availability = await request.app.state.rerank_probe.check(rerank_cfg)
+            if not availability.ok:
+                span.set_attribute("rerank_unavailable", True)
+                logger.warning(
+                    "create_search: rerank requested but unavailable (%s)", availability.reason
+                )
+                raise HTTPException(
+                    status_code=503,
+                    detail={
+                        "code": RERANK_UNAVAILABLE,
+                        "message": availability.reason,
+                        "fallback": "semantic",
+                    },
+                )
+
         try:
             job_id = await job_repo.create_job(
                 query=req.query,
@@ -125,6 +168,8 @@ async def create_search(req: SearchRequest, request: Request) -> SearchJobRespon
                 embedding_profile=embed_cfg.primary,
                 chunks_table=chunks_table,
                 library_id=req.library_id,
+                rerank=req.rerank,
+                rerank_profile=rerank_profile,
             )
         except Exception:
             record_failure("storage_failed", "api")
@@ -134,6 +179,8 @@ async def create_search(req: SearchRequest, request: Request) -> SearchJobRespon
             query_job_id=job_id,
             query=req.query,
             embedding_profile=embed_cfg.primary,
+            rerank=req.rerank,
+            rerank_profile=rerank_profile,
             trace_id=trace_id,
             parent_span_id=parent_span_id,
         )
@@ -173,4 +220,5 @@ async def get_search_result(job_id: str, request: Request) -> SearchStatusRespon
         status=job["status"],
         results=results,
         error=job.get("error"),
+        error_code=job.get("error_code"),
     )

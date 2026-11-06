@@ -1,3 +1,10 @@
+# Machine-readable code for "the remote reranker could not be used". Sent as the
+# `detail.code` of POST /search's 503 and stored on a failed search job
+# (`error_code`), so a client handles both the up-front and the mid-job case the
+# same way: offer a plain semantic search instead.
+RERANK_UNAVAILABLE = "rerank_unavailable"
+
+
 class ChunkTableNotFoundError(Exception):
     """Raised when the chunk table referenced by an EmbedTask does not exist.
 

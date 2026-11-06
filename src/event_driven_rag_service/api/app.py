@@ -34,6 +34,7 @@ from event_driven_rag_service.infrastructure.task_queue import setup_topology
 from event_driven_rag_service.repository.post_repository import PostRepository
 from event_driven_rag_service.repository.folder_repository import FolderRepository
 from event_driven_rag_service.repository.highlight_repository import HighlightRepository
+from event_driven_rag_service.infrastructure.rerank_probe import RerankProbe
 from event_driven_rag_service.repository.search_job_repository import SearchJobRepository
 from event_driven_rag_service.repository.maintenance_repository import MaintenanceRepository
 from event_driven_rag_service.api.sync import router as sync_router
@@ -89,12 +90,16 @@ async def lifespan(app: FastAPI):
     app.state.search_job_repo = search_job_repo
     app.state.maintenance_repo = maintenance_repo
     app.state.seen_post_tables: set[str] = set()
+    app.state.rerank_probe = RerankProbe(
+        settings.embed_remote_url, api_key=settings.embed_remote_api_key
+    )
 
     logger.info("Startup complete")
     yield
 
     # --- Teardown --------------------------------------------------------
     logger.info("Shutting down")
+    await app.state.rerank_probe.aclose()
     await pool.close()
     await rmq.close()
 

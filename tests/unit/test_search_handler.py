@@ -122,10 +122,9 @@ async def test_handle_success_emits_candidates_retrieved_event():
 
 
 @pytest.mark.asyncio
-async def test_handle_rerank_true_overfetches_candidate_pool():
-    """When the job asked for rerank, SearchHandler should overfetch k*3
-    candidates (no floor/ceiling) instead of exactly k, and carry rerank=True
-    through the emitted event."""
+async def test_handle_rerank_true_fetches_exactly_k_and_carries_rerank():
+    """A reranked job fetches exactly k candidates (no overfetch) and carries
+    rerank=True through the emitted event."""
     job = _make_job(k=5)
     job["rerank"] = True
     job["rerank_profile"] = "qwen3-reranker-0.6b"
@@ -139,7 +138,7 @@ async def test_handle_rerank_true_overfetches_candidate_pool():
 
     assert len(searcher.calls) == 1
     _, _, result_k = searcher.calls[0]
-    assert result_k == 15  # k * 3, no floor/ceiling
+    assert result_k == 5  # exactly k, no overfetch
 
     events = bus.drain_topic("search_candidates.retrieved")
     assert events[0]["rerank"] is True

@@ -121,6 +121,11 @@ services:
       RABBITMQ_URL: "amqp://rag:rag@rabbitmq:5672/"
       REDPANDA_SERVERS: "redpanda:29092"
       EVENT_BUS: "${EVENT_BUS:-postgres}"
+      # POST /search with rerank=true checks the remote embedder is up before
+      # creating the job (infrastructure/rerank_probe.py). Unset = reranking is
+      # always refused with 503.
+      EMBED_REMOTE_URL: "${EMBED_REMOTE_URL:-}"
+      EMBED_REMOTE_API_KEY: "${EMBED_REMOTE_API_KEY:-}"
       # Observability — off by default, no overhead.  Set OTEL_ENABLED=true to
       # activate structured JSON logs + OTLP trace export.
       OTEL_ENABLED: "${OTEL_ENABLED:-false}"

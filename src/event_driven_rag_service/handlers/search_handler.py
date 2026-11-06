@@ -113,11 +113,10 @@ class SearchHandler:
             k = job["k"]
             rerank = bool(job.get("rerank", False))
             rerank_profile = job.get("rerank_profile")
-            # Overfetch a candidate pool for rerank to have something to
-            # re-order — a fixed 3x multiplier, no floor/ceiling. When
-            # rerank is off this still returns exactly k (harmless no-op
-            # multiply), so the ANN query itself doesn't need to branch.
-            candidate_pool = k * 3 if rerank else k
+            # The candidate pool is exactly k with or without rerank: a reranked
+            # search re-orders the k nearest chunks rather than fetching extra
+            # (POST /search caps k at 99, so the reranker never sees a huge pool).
+            candidate_pool = k
 
             try:
                 raw = await self._chunks.search_nearest(

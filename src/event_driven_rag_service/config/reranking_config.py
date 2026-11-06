@@ -47,9 +47,17 @@ class RerankConfig:
 # kept alongside it for fast local dev and the live-gated integration test —
 # small enough to load on a modest GPU (or even CPU) in seconds, so the model
 # plumbing can be exercised without waiting on the 4B download/load.
+#
+# Both rerankers are remote-only (allow_local=False). Loading one on the homelab
+# CPU is the same freeze as the 4B embedder (see config/embedding_config.py), and a
+# search that asked for reranking should fail loudly, so the client can offer a
+# plain semantic search, rather than quietly come back slow or unranked. POST
+# /search checks the remote first (infrastructure/rerank_probe.py); a reranker
+# that goes away mid-job fails the job with error_code "rerank_unavailable".
 qwen3_reranker_4b_cfg = RerankConfig(
     primary="Qwen/Qwen3-Reranker-4B",
     queue="gpu.rerank.qwen3-reranker-4b",
+    allow_local=False,
     remote_model="text-rerank-qwen3-reranker-4b",
     # int4 (nf4) — a deliberately more aggressive default than the int8 used
     # for embedding models: a reranker only needs to preserve *relative*
@@ -63,6 +71,7 @@ qwen3_reranker_4b_cfg = RerankConfig(
 qwen3_reranker_0_6b_cfg = RerankConfig(
     primary="Qwen/Qwen3-Reranker-0.6B",
     queue="gpu.rerank.qwen3-reranker-0.6b",
+    allow_local=False,
     remote_model="text-rerank-qwen3-reranker-0.6b",
     quantization="int4",
     max_batch=50,

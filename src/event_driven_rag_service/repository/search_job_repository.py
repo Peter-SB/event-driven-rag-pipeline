@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS search_jobs (
     embedding       TEXT,
     results         JSONB,
     error           TEXT,
+    error_code      TEXT,
     created_at      TIMESTAMPTZ  DEFAULT now(),
     completed_at    TIMESTAMPTZ
 );
@@ -47,6 +48,7 @@ CREATE TABLE IF NOT EXISTS search_jobs (
 _ADD_RERANK_COLUMNS_SQL = """
 ALTER TABLE search_jobs ADD COLUMN IF NOT EXISTS rerank BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE search_jobs ADD COLUMN IF NOT EXISTS rerank_profile TEXT;
+ALTER TABLE search_jobs ADD COLUMN IF NOT EXISTS error_code TEXT;
 """
 
 
@@ -149,16 +151,19 @@ class SearchJobRepository:
             )
         logger.info("SearchJobRepository: job %s complete (%d results)", job_id, len(results))
 
-    async def fail_job(self, job_id: str, error: str) -> None:
-        """Record an error and transition job to status='failed'."""
+    async def fail_job(self, job_id: str, error: str, code: Optional[str] = None) -> None:
+        """Record an error and transition job to status='failed'.
+
+        `code` is a machine-readable reason a client can act on (see
+        exceptions.RERANK_UNAVAILABLE); `error` stays the human-readable text."""
         async with self._pool.acquire() as conn:
             await conn.execute(
                 """
                 UPDATE search_jobs
-                SET status = 'failed', error = $1, completed_at = now()
+                SET status = 'failed', error = $1, error_code = $3, completed_at = now()
                 WHERE id = $2::uuid
                 """,
-                error, job_id,
+                error, job_id, code,
             )
         logger.warning("SearchJobRepository: job %s failed: %s", job_id, error)
 

@@ -33,7 +33,7 @@ MODEL_ID = "text-rerank-qwen3-reranker-0.6b"
 def real_settings() -> Settings:
     return Settings(
         host="127.0.0.1",
-        port=8100,
+        port=38417,
         log_level="WARNING",
         api_key="",
         device="cpu",
