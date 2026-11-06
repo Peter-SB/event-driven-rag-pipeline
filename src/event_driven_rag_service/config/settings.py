@@ -70,6 +70,13 @@ class Settings:
     embed_remote_timeout_s: float = field(
         default_factory=lambda: float(os.getenv("EMBED_REMOTE_TIMEOUT_S", "10.0"))
     )
+    # Read timeout for one POST /v1/rerank call. Scoring is query x every candidate
+    # (up to k=999 chunks of ~400 words through a 4B model), so it needs far longer
+    # than an embedding batch: with the 10s above, a default 99-candidate search
+    # timed out and failed with rerank_unavailable.
+    embed_remote_rerank_timeout_s: float = field(
+        default_factory=lambda: float(os.getenv("EMBED_REMOTE_RERANK_TIMEOUT_S", "240.0"))
+    )
     # Relative to embed_remote_url; OpenAI-compatible model-list endpoint, checked
     # synchronously before every batch (no background poller).
     embed_remote_health_path: str = field(

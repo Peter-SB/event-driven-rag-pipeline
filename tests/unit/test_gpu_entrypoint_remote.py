@@ -362,3 +362,16 @@ def test_local_load_rejects_a_model_whose_dim_disagrees_with_the_config(
     # The fake reports 1024 dims; bge-small declares 384.
     with pytest.raises(RuntimeError, match="refusing to embed"):
         gpu_entrypoint._load_sentence_transformer(BGE_SMALL, None)
+
+
+def test_remote_reranker_uses_the_longer_rerank_timeout():
+    """Scoring a candidate pool takes far longer than an embedding batch; with the
+    embedding timeout a default 99-candidate search timed out and failed."""
+    from event_driven_rag_service.config.reranking_config import RERANK_CONFIGS
+
+    settings.embed_remote_url = DEAD_URL
+    model = gpu_entrypoint._load_reranker(RERANK_CONFIGS["default"].primary)
+
+    read_timeout = model._remote._client.timeout.read
+    assert read_timeout == settings.embed_remote_rerank_timeout_s
+    assert read_timeout > settings.embed_remote_timeout_s

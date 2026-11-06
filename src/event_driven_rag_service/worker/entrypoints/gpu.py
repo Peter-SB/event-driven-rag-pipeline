@@ -188,7 +188,7 @@ def _load_reranker(model_name: str) -> Any:
         remote_model_name=cfg.remote_id,
         base_url=settings.embed_remote_url,
         api_key=settings.embed_remote_api_key,
-        timeout_s=settings.embed_remote_timeout_s,
+        timeout_s=settings.embed_remote_rerank_timeout_s,
         health_path=settings.embed_remote_health_path,
         load_timeout_s=settings.embed_remote_load_timeout_s,
         quantization=cfg.quantization,
