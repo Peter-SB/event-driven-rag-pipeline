@@ -8,14 +8,23 @@ never happens.
 Everything here is synchronous and lock-guarded. FastAPI calls into it from a
 threadpool (see ``app.py``) so the event loop stays free to answer the health
 checks the client fires before every batch.
+
+GPU work is taken in turns (``_TurnQueue``): first come first served, reranks
+ahead of embeds, and a bounded line so a backlog is refused with a clear 503
+rather than left to time out. A load that fails for lack of GPU memory is
+retried once after a hard memory clear and then fails; a quantised model is
+never quietly reloaded at full precision, which does not fit an 8 GB card and
+runs an order of magnitude slower.
 """
 from __future__ import annotations
 
+import bisect
+import contextlib
 import gc
 import logging
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import replace
 from typing import Any, Protocol
 
@@ -40,6 +49,85 @@ class UnknownModelError(KeyError):
 
 class ModelLoadError(RuntimeError):
     """Model could not be loaded (download failed, dim mismatch, OOM, ...)."""
+
+
+class QueueFullError(RuntimeError):
+    """Too many requests are already waiting for the GPU; try again shortly."""
+
+
+# Lower runs first. A rerank has a person waiting on it; embeds are usually bulk.
+PRIORITY_RERANK = 0
+PRIORITY_EMBED = 1
+
+
+class _TurnQueue:
+    """One holder at a time; waiters go first-in-first-out within a priority.
+
+    A bare lock wakes waiters in no particular order, so a rerank could sit behind
+    any number of later embeds. This also bounds the line: past ``max_waiting`` a
+    new arrival is refused (``QueueFullError``) instead of waiting until its
+    caller's own timeout fires.
+    """
+
+    def __init__(self, max_waiting: int) -> None:
+        self._cond = threading.Condition()
+        self._waiting: list[tuple[int, int]] = []  # (priority, arrival), kept sorted
+        self._arrivals = 0
+        self._busy = False
+        self._max_waiting = max_waiting
+
+    @property
+    def waiting(self) -> int:
+        with self._cond:
+            return len(self._waiting)
+
+    @contextlib.contextmanager
+    def turn(self, priority: int) -> Iterator[None]:
+        with self._cond:
+            if self._busy and len(self._waiting) >= self._max_waiting:
+                raise QueueFullError(
+                    f"{len(self._waiting)} requests are already waiting for the GPU"
+                )
+            self._arrivals += 1
+            ticket = (priority, self._arrivals)
+            bisect.insort(self._waiting, ticket)
+            try:
+                while self._busy or self._waiting[0] != ticket:
+                    self._cond.wait()
+            except BaseException:
+                self._waiting.remove(ticket)
+                self._cond.notify_all()
+                raise
+            self._waiting.pop(0)
+            self._busy = True
+        try:
+            yield
+        finally:
+            with self._cond:
+                self._busy = False
+                self._cond.notify_all()
+
+
+def _free_vram_label() -> str:
+    """Free GPU memory for the logs, e.g. "4120 MB"; "n/a" without CUDA."""
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            return f"{torch.cuda.mem_get_info()[0] // (1024 * 1024)} MB"
+    except Exception:
+        pass
+    return "n/a"
+
+
+def _looks_like_out_of_memory(exc: BaseException) -> bool:
+    """True for a failure that more free GPU memory could fix: CUDA OOM, or
+    accelerate refusing to place a quantised model ("dispatched on the CPU")."""
+    text = f"{type(exc).__name__} {exc}".lower()
+    return any(
+        marker in text
+        for marker in ("out of memory", "outofmemory", "gpu ram", "dispatched on the cpu")
+    )
 
 
 # Accepted spellings for the optional `quantization` field on a load request.
@@ -119,9 +207,12 @@ def default_loader(spec: ModelSpec, settings: Settings) -> "Encoder | Reranker":
 def _load_embedder(spec: ModelSpec, settings: Settings) -> Encoder:
     """Load a SentenceTransformer, applying int8 quantisation when asked for.
 
-    Falls back to non-quantised loading if bitsandbytes is unavailable or the
-    quantised load raises — a slower model beats a service that 503s, and the
-    pipeline's own local fallback should be the last resort, not the first.
+    A failed quantised load on CUDA raises; it is *not* retried at full precision.
+    A 4B model at full precision does not fit an 8 GB card, spills into system
+    memory and runs an order of magnitude slower — slow enough to time the caller
+    out — so a clear failure (and the manager's one retry after clearing memory)
+    beats that. Full precision still applies where quantisation was never wanted:
+    CPU, or ``enable_quantization`` off.
     """
     from sentence_transformers import SentenceTransformer
 
@@ -158,16 +249,8 @@ def _load_embedder(spec: ModelSpec, settings: Settings) -> Encoder:
         return model
 
     if want_quant:
-        try:
-            logger.info("Loading %s (%s) in int8 on %s", spec.id, spec.repo_id, device)
-            return _build(quantised=True)
-        except Exception:
-            logger.warning(
-                "int8 load failed for %r — retrying at full precision "
-                "(is bitsandbytes installed?)",
-                spec.id,
-                exc_info=True,
-            )
+        logger.info("Loading %s (%s) in int8 on %s", spec.id, spec.repo_id, device)
+        return _build(quantised=True)
 
     logger.info("Loading %s (%s) on %s", spec.id, spec.repo_id, device)
     return _build(quantised=False)
@@ -230,19 +313,9 @@ def _load_reranker(spec: ModelSpec, settings: Settings) -> Reranker:
         return model.eval()
 
     if want_quant:
-        try:
-            logger.info("Loading %s (%s) in int4 on %s", spec.id, spec.repo_id, device)
-            model = _build(quantised=True)
-        except Exception:
-            logger.warning(
-                "int4 load failed for %r — retrying at full precision "
-                "(is bitsandbytes installed?)",
-                spec.id,
-                exc_info=True,
-            )
-            model = _build(quantised=False)
-            if device != "cuda":
-                model = model.to(device)
+        # No full-precision retry on failure: see _load_embedder.
+        logger.info("Loading %s (%s) in int4 on %s", spec.id, spec.repo_id, device)
+        model = _build(quantised=True)
     else:
         logger.info("Loading %s (%s) on %s", spec.id, spec.repo_id, device)
         model = _build(quantised=False)
@@ -251,6 +324,11 @@ def _load_reranker(spec: ModelSpec, settings: Settings) -> Reranker:
 
     tokenizer = AutoTokenizer.from_pretrained(spec.repo_id, padding_side="left")
     return _RerankerEncoder(model, tokenizer)
+
+
+# Documents scored per forward pass. Small enough that the padded batch plus the
+# resident 4B int4 model fit an 8 GB GPU; bigger pools are just more passes.
+_RERANK_BATCH_SIZE = 8
 
 
 class _RerankerEncoder:
@@ -271,6 +349,17 @@ class _RerankerEncoder:
         self._suffix_tokens = tokenizer.encode(_QWEN3_RERANK_SUFFIX, add_special_tokens=False)
 
     def score(self, query: str, documents: list[str]) -> list[float]:
+        """Relevance score per document, in input order.
+
+        Scored in sub-batches of ``_RERANK_BATCH_SIZE``: one forward pass over a
+        whole pool (99+ documents) pads every row to the longest and, without the
+        sub-batching, overflowed the 8 GB card and ran for minutes."""
+        scores: list[float] = []
+        for start in range(0, len(documents), _RERANK_BATCH_SIZE):
+            scores.extend(self._score_batch(query, documents[start:start + _RERANK_BATCH_SIZE]))
+        return scores
+
+    def _score_batch(self, query: str, documents: list[str]) -> list[float]:
         import torch
 
         pairs = [
@@ -291,7 +380,9 @@ class _RerankerEncoder:
         inputs = {k: v.to(self._model.device) for k, v in inputs.items()}
 
         with torch.no_grad():
-            logits = self._model(**inputs).logits[:, -1, :]
+            # Only the last position's logits are used, so ask for just those: the
+            # full [batch, seq, ~152k vocab] logits tensor is several GB.
+            logits = self._model(**inputs, logits_to_keep=1).logits[:, -1, :]
             true_vec = logits[:, self._token_true_id]
             false_vec = logits[:, self._token_false_id]
             stacked = torch.stack([false_vec, true_vec], dim=1)
@@ -312,6 +403,8 @@ class ModelManager:
         self._loader = loader
         self._clock = clock
         self._lock = threading.RLock()
+        # Who gets the GPU next; the lock above still guards the model itself.
+        self._turns = _TurnQueue(settings.max_queue)
         self._model: Encoder | Reranker | None = None
         self._model_id: str | None = None
         # Precision the resident model was actually loaded at, which can differ
@@ -391,48 +484,79 @@ class ModelManager:
         if base is None:
             raise UnknownModelError(model_id)
 
+        priority = PRIORITY_RERANK if base.kind == "rerank" else PRIORITY_EMBED
+        with self._turns.turn(priority), self._lock:
+            return self._load_locked(base, quantization)
+
+    def _load_locked(self, base: ModelSpec, quantization: str | None = None) -> ModelSpec:
+        """`load()` once the caller holds its turn and the lock."""
+        model_id = base.id
         want_quant = resolve_quantization(base, quantization)
         spec = replace(base, quantize=want_quant)
         quant_label = _quant_label(spec)
 
-        with self._lock:
-            if self._model_id == model_id and self._quantized == want_quant:
-                self._touch()
-                return spec
-
-            if self._model_id == model_id:
-                logger.info(
-                    "Reloading %s at %s (was %s)",
-                    model_id,
-                    quant_label if want_quant else "full precision",
-                    quant_label if self._quantized else "full precision",
-                )
-                self._release()
-
-            if self._model_id is not None:
-                logger.info("Evicting %s to make room for %s", self._model_id, model_id)
-                self._release()
-
-            try:
-                model = self._loader(spec, self._settings)
-            except Exception as exc:
-                raise ModelLoadError(f"failed to load {model_id!r}: {exc}") from exc
-
-            if spec.kind == "embed":
-                self._verify_dim(spec, model)
-
-            self._model = model
-            self._model_id = model_id
-            self._quantized = want_quant
+        if self._model_id == model_id and self._quantized == want_quant:
             self._touch()
-            logger.info(
-                "Model loaded: %s (kind=%s dim=%s quantization=%s)",
-                model_id,
-                spec.kind,
-                spec.dim if spec.kind == "embed" else "n/a",
-                self.applied_quantization or "full precision",
-            )
             return spec
+
+        if self._model_id == model_id:
+            logger.info(
+                "Reloading %s at %s (was %s)",
+                model_id,
+                quant_label if want_quant else "full precision",
+                quant_label if self._quantized else "full precision",
+            )
+            self._release()
+
+        if self._model_id is not None:
+            logger.info("Evicting %s to make room for %s", self._model_id, model_id)
+            self._release()
+
+        logger.info("GPU free before loading %s: %s", model_id, _free_vram_label())
+        model = self._load_with_retry(spec)
+
+        if spec.kind == "embed":
+            self._verify_dim(spec, model)
+
+        self._model = model
+        self._model_id = model_id
+        self._quantized = want_quant
+        self._touch()
+        logger.info(
+            "Model loaded: %s (kind=%s dim=%s quantization=%s) GPU free now: %s",
+            model_id,
+            spec.kind,
+            spec.dim if spec.kind == "embed" else "n/a",
+            self.applied_quantization or "full precision",
+            _free_vram_label(),
+        )
+        return spec
+
+    def _load_with_retry(self, spec: ModelSpec) -> "Encoder | Reranker":
+        """Run the loader; if it fails for want of GPU memory, clear the cache,
+        give the driver a moment to hand the memory back, and try once more.
+
+        Any other failure (download, bad repo) is not helped by waiting, so it is
+        raised straight away."""
+        try:
+            return self._loader(spec, self._settings)
+        except Exception as first:
+            if not _looks_like_out_of_memory(first):
+                raise ModelLoadError(f"failed to load {spec.id!r}: {first}") from first
+            logger.warning(
+                "Loading %s ran out of GPU memory (free: %s) — clearing it and retrying once",
+                spec.id,
+                _free_vram_label(),
+            )
+            self._clear_gpu_memory()
+            time.sleep(self._settings.load_retry_wait_s)
+            try:
+                return self._loader(spec, self._settings)
+            except Exception as second:
+                raise ModelLoadError(
+                    f"failed to load {spec.id!r}: not enough free GPU memory "
+                    f"({_free_vram_label()}): {second}"
+                ) from second
 
     def _verify_dim(self, spec: ModelSpec, model: Encoder) -> None:
         """Encode a probe string and reject the model if its width is wrong.
@@ -470,12 +594,23 @@ class ModelManager:
         self._model = None
         self._model_id = None
         self._quantized = False
+        self._clear_gpu_memory()
+
+    @staticmethod
+    def _clear_gpu_memory() -> None:
+        """Hand every freed tensor back to the driver. A bare ``empty_cache`` after
+        one ``gc.collect`` left the next load short of memory: bitsandbytes models
+        sit in reference cycles that need a second pass, and the free only counts
+        once the GPU has finished with them."""
+        gc.collect()
         gc.collect()
         try:
             import torch
 
             if torch.cuda.is_available():
+                torch.cuda.synchronize()
                 torch.cuda.empty_cache()
+                torch.cuda.ipc_collect()
         except Exception:  # no torch / no CUDA — nothing to free
             pass
 
@@ -503,9 +638,9 @@ class ModelManager:
             return []
 
         started = self._clock()
-        with self._lock:
+        with self._turns.turn(PRIORITY_EMBED), self._lock:
             if self._model_id != model_id:
-                self.load(model_id)
+                self._load_locked(spec)
             model = self._model
             assert model is not None  # load() sets it or raises
 
@@ -553,9 +688,9 @@ class ModelManager:
             return []
 
         started = self._clock()
-        with self._lock:
+        with self._turns.turn(PRIORITY_RERANK), self._lock:
             if self._model_id != model_id:
-                self.load(model_id)
+                self._load_locked(spec)
             model = self._model
             assert model is not None  # load() sets it or raises
 

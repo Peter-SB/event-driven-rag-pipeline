@@ -56,6 +56,15 @@ class Settings:
         default_factory=lambda: float(os.getenv("REAPER_INTERVAL_S", "15"))
     )
 
+    # Requests that may wait for the GPU behind the one running. Past this the service
+    # answers 503 + Retry-After instead of letting callers pile up until they time out.
+    max_queue: int = field(default_factory=lambda: int(os.getenv("MAX_QUEUE", "16")))
+    # After a load fails for lack of GPU memory the service clears the cache, waits this
+    # long for the driver to hand the memory back, and tries once more.
+    load_retry_wait_s: float = field(
+        default_factory=lambda: float(os.getenv("LOAD_RETRY_WAIT_S", "3"))
+    )
+
     # Base URL of the pipeline API, e.g. http://192.168.0.234:8000. When set, this
     # service POSTs /maintenance/requeue-missing-embeddings at startup (retrying
     # every backfill_retry_s until the pipeline answers) and then every
