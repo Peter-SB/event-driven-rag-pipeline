@@ -25,6 +25,7 @@ from remote_embedder.config import Settings, settings as default_settings
 from remote_embedder.manager import (
     ModelLoadError,
     ModelManager,
+    QueueFullError,
     UnknownModelError,
 )
 from remote_embedder.registry import all_specs, get_spec
@@ -173,6 +174,8 @@ def _register_routes(app: FastAPI) -> None:
             vectors = await run_in_threadpool(mgr.encode, body.model, texts)
         except UnknownModelError:
             raise HTTPException(status_code=400, detail=f"unknown model: {body.model}")
+        except QueueFullError as exc:
+            raise _busy(exc)
         except ModelLoadError as exc:
             raise HTTPException(status_code=503, detail=str(exc))
 
@@ -214,6 +217,8 @@ def _register_routes(app: FastAPI) -> None:
             scores = await run_in_threadpool(mgr.rerank, body.model, body.query, body.documents)
         except UnknownModelError as exc:
             raise HTTPException(status_code=400, detail=str(exc) or f"unknown model: {body.model}")
+        except QueueFullError as exc:
+            raise _busy(exc)
         except ModelLoadError as exc:
             raise HTTPException(status_code=503, detail=str(exc))
 
@@ -266,6 +271,8 @@ def _register_routes(app: FastAPI) -> None:
             await run_in_threadpool(mgr.load, body.model, body.quantization)
         except UnknownModelError:
             raise HTTPException(status_code=404, detail=f"unknown model: {body.model}")
+        except QueueFullError as exc:
+            raise _busy(exc)
         except ModelLoadError as exc:
             raise HTTPException(status_code=503, detail=str(exc))
         return ModelActionResponse(
@@ -295,6 +302,15 @@ def _register_routes(app: FastAPI) -> None:
             state="not-loaded",
             detail="unloaded" if unloaded else "was not loaded",
         )
+
+
+def _busy(exc: QueueFullError) -> HTTPException:
+    """503 for a full queue. Retry-After says when a retry is worth sending."""
+    return HTTPException(
+        status_code=503,
+        detail=f"busy: {exc}",
+        headers={"Retry-After": "10"},
+    )
 
 
 def _estimate_usage(texts: list[str]) -> Usage:
