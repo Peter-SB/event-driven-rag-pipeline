@@ -52,7 +52,7 @@ router = APIRouter(prefix="/search", tags=["search"])
 class SearchRequest(BaseModel):
     query: str = Field(..., min_length=1, description="Query text to search for")
     chunk_type: str = Field("body", description="Chunk type to search: body, summary_title, title")
-    k: int = Field(10, gt=0, le=99, description="Number of results to return")
+    k: int = Field(99, gt=0, le=999, description="Number of results to return")
     library_id: str = Field(..., description="Library to search (e.g. 'main')")
     rerank: bool = Field(
         False,

@@ -45,7 +45,7 @@ BATCH_SIZE = 4
 def real_settings() -> Settings:
     return Settings(
         host="127.0.0.1",
-        port=38417,
+        port=47291,
         log_level="WARNING",
         api_key="",
         device="cpu",

@@ -61,18 +61,18 @@ because breaking any of them makes the pipeline fall back to local embedding
 ### By hand
 
 ```bash
-curl http://localhost:38417/v1/models
-curl http://localhost:38417/api/v0/models
+curl http://localhost:47291/v1/models
+curl http://localhost:47291/api/v0/models
 
-curl -X POST http://localhost:38417/api/v1/models/load \
+curl -X POST http://localhost:47291/api/v1/models/load \
   -H 'Content-Type: application/json' \
   -d '{"model":"text-embedding-qwen3-embedding-0.6b"}'
 
-curl -X POST http://localhost:38417/v1/embeddings \
+curl -X POST http://localhost:47291/v1/embeddings \
   -H 'Content-Type: application/json' \
   -d '{"model":"text-embedding-qwen3-embedding-0.6b","input":["hello","world"]}'
 
-curl -X POST http://localhost:38417/api/v1/models/unload \
+curl -X POST http://localhost:47291/api/v1/models/unload \
   -H 'Content-Type: application/json' \
   -d '{"instance_id":"text-embedding-qwen3-embedding-0.6b"}'
 ```
@@ -180,8 +180,8 @@ cp .env.example .env
 python -m remote_embedder
 ```
 
-Serves on `0.0.0.0:38417` by default. Verify with
-`curl http://localhost:38417/health`, and check `nvidia-smi` shows the process
+Serves on `0.0.0.0:47291` by default. Verify with
+`curl http://localhost:47291/health`, and check `nvidia-smi` shows the process
 after a load.
 
 Single worker on purpose — extra uvicorn workers would each load their own copy
@@ -192,7 +192,7 @@ of the model into VRAM.
 | Variable | Default | Notes |
 |---|---|---|
 | `HOST` | `0.0.0.0` | |
-| `PORT` | `38417` | |
+| `PORT` | `47291` | |
 | `LOG_LEVEL` | `INFO` | |
 | `API_KEY` | (empty) | Empty = bearer tokens accepted and ignored. Set to enforce. |
 | `DEVICE` | `auto` | `cuda`, `cpu`, or `auto` |
@@ -246,7 +246,7 @@ be routine noise crowding out the events that actually matter. See
 In the pipeline's `.env`:
 
 ```bash
-EMBED_REMOTE_URL=http://<gpu-box>:38417/v1
+EMBED_REMOTE_URL=http://<gpu-box>:47291/v1
 EMBED_REMOTE_API_KEY=              # only if API_KEY is set here
 EMBED_REMOTE_TIMEOUT_S=30.0
 EMBED_REMOTE_HEALTH_PATH=/models

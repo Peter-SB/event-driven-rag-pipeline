@@ -217,12 +217,23 @@ def test_create_search_k_zero_returns_422(client):
 
 
 def test_create_search_k_over_max_returns_422(client):
-    """POST /search with k>99 should return 422."""
+    """POST /search with k>999 should return 422."""
     response = client.post(
         "/search/",
-        json={"query": "test", "chunk_type": "body", "k": 100, "library_id": "main"},
+        json={"query": "test", "chunk_type": "body", "k": 1000, "library_id": "main"},
     )
     assert response.status_code == 422
+
+
+def test_create_search_k_defaults_to_99_and_allows_999(client):
+    client.post("/search/", json={"query": "test", "chunk_type": "body", "library_id": "main"})
+    r = client.post(
+        "/search/",
+        json={"query": "test", "chunk_type": "body", "k": 999, "library_id": "main"},
+    )
+    assert r.status_code == 202
+    created = client.app.state.search_job_repo.created
+    assert [j["k"] for j in created] == [99, 999]
 
 
 def test_create_search_missing_chunk_table_returns_404(client, fake_chunk_repo):

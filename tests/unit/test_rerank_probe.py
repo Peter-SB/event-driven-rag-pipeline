@@ -9,7 +9,7 @@ from event_driven_rag_service.config.reranking_config import RERANK_CONFIGS, Rer
 from event_driven_rag_service.infrastructure.rerank_probe import RerankProbe
 
 CFG = RERANK_CONFIGS["default"]
-URL = "http://gpu-box:38417/v1"
+URL = "http://gpu-box:47291/v1"
 
 
 def _server(served=(CFG.remote_id,), healthy=True, calls=None):

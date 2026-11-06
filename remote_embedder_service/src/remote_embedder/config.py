@@ -23,7 +23,7 @@ def _env_bool(name: str, default: bool) -> bool:
 @dataclass
 class Settings:
     host: str = field(default_factory=lambda: os.getenv("HOST", "0.0.0.0"))
-    port: int = field(default_factory=lambda: int(os.getenv("PORT", "38417")))
+    port: int = field(default_factory=lambda: int(os.getenv("PORT", "47291")))
     log_level: str = field(default_factory=lambda: os.getenv("LOG_LEVEL", "INFO"))
 
     # File logging. This service has no otel-collector to ship logs to (unlike

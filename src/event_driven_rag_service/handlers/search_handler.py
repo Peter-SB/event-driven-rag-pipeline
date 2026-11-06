@@ -114,8 +114,7 @@ class SearchHandler:
             rerank = bool(job.get("rerank", False))
             rerank_profile = job.get("rerank_profile")
             # The candidate pool is exactly k with or without rerank: a reranked
-            # search re-orders the k nearest chunks rather than fetching extra
-            # (POST /search caps k at 99, so the reranker never sees a huge pool).
+            # search re-orders the k nearest chunks rather than fetching extra.
             candidate_pool = k
 
             try:

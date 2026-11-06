@@ -218,7 +218,7 @@ abstraction boundary was in the right place.
 
 | Variable | Default | Notes |
 |---|---|---|
-| `EMBED_REMOTE_URL` | (unset) | Base URL including `/v1`, e.g. `http://gpu-box:38417/v1`. Unset disables remote embedding entirely. |
+| `EMBED_REMOTE_URL` | (unset) | Base URL including `/v1`, e.g. `http://gpu-box:47291/v1`. Unset disables remote embedding entirely. |
 | `EMBED_REMOTE_API_KEY` | (unset) | Sent as `Authorization: Bearer`. Safe to leave unset. |
 | `EMBED_REMOTE_TIMEOUT_S` | `10.0` | Per-request timeout for health and embed calls. |
 | `EMBED_REMOTE_HEALTH_PATH` | `/models` | Relative to `EMBED_REMOTE_URL`. |
@@ -238,7 +238,7 @@ There is no metric for "was this batch embedded remotely". The signal is in the
 GPU worker's logs, one line per batch:
 
 ```
-embeddings generated remotely (endpoint=gpu-box:38417 count=32 model=BAAI/bge-base-en-v1.5)
+embeddings generated remotely (endpoint=gpu-box:47291 count=32 model=BAAI/bge-base-en-v1.5)
 embeddings generated locally (fallback) (count=32 model=BAAI/bge-base-en-v1.5)
 ```
 
@@ -262,7 +262,7 @@ before looking anywhere else.
 
 ```bash
 pytest tests/unit/test_remote_embedding.py            # no endpoint needed
-EMBED_REMOTE_URL=http://gpu-box:38417/v1 pytest -m remote_embedding
+EMBED_REMOTE_URL=http://gpu-box:47291/v1 pytest -m remote_embedding
 cd remote_embedder_service && pytest                  # the service's own suite
 ```
 
